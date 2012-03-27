@@ -1,0 +1,341 @@
+#!/bin/env python
+
+from optparse import OptionParser
+import os
+import re
+import socket
+import sys
+import time
+import traceback
+from threading import Lock,Thread
+import MySQLdb
+
+class ClientHandler(Thread): 
+  """
+  Thread subclass to handle requests from a single client.
+  """
+
+  def __init__(self, parent):
+    Thread.__init__(self)
+    self.clientSocket = None
+    self.parent = parent
+
+  def run(self):
+
+    if self.clientSocket == None:
+      return
+
+    while True:
+
+      # Receive a command and split off the leading command word
+      command = self.recv()
+      if command == None:
+        break
+      command = command.strip()
+      remainder = ''
+      if command.find(' ') >= 0:
+        (command, remainder) = re.split("\s+", command, 1)
+
+      try:
+        command = command.upper()
+        if command == 'CLIENTS':
+          (server, range) = re.split("\s+", remainder, 1)
+          self.send('OK ' + ','.join(self.parent.get_clients(server, range)))
+        elif command == 'ECHO':
+          self.send('OK ' + remainder)
+        elif command == 'GET':
+          (server, client, timestamp, attr) = re.split("\s+", remainder, 3)
+          reply = 'OK '
+          for value in self.parent.get_attr(server, client, timestamp, attr):
+            reply += "[%s,%s,%s,%s,%s]" % value
+          self.send(reply)
+        elif command == 'HISTORY':
+          (server, client, range, attr) = re.split("\s+", remainder, 3)
+          reply = 'OK '
+          for value in self.parent.get_hist(server, client, range, attr):
+            reply += "[%s,%s,%s,%s,%s]" % value
+          self.send(reply)
+        elif command == 'SET':
+          (server,client,timestamp,attr,value) = re.split("\s+", remainder, 4)
+          if value == 'None':
+            value = None
+          self.parent.set_attr(server, client, timestamp, attr, value)
+          self.send('OK ');
+        elif command == 'SUM':
+          (server, client, range, attr) = re.split("\s+", remainder, 3)
+          reply = 'OK '
+          for value in self.parent.get_sum(server, client, range, attr):
+            reply += "[%s,%s,%s,%s]" % value
+          self.send(reply)
+        else:
+          raise Exception("Unknown command '%s'" % command)
+      except:
+        self.parent.log("Caught exception");
+        self.parent.log(None)
+        break
+
+    self.clientSocket.close()
+    self.clientSocket = None
+
+  def recv(self):
+    """
+    A convenience method for receiving a message from the client.
+    """
+    result = ''
+    while not result.endswith("\n"):
+      chunk = self.clientSocket.recv(256)
+      if chunk == '':
+        return None
+      result += chunk
+    return result
+
+  def send(self, message):
+    """
+    A convenience method for sending a message to the client.
+    """
+    self.parent.log("Send '%s'" % message)
+    self.clientSocket.send(message + "\n")
+
+  def set_client_socket(self, socket):
+    """
+    Replace the current client connection with one specified.  Supports the
+    possibile future use of allocation from a pool of ClientHandlers, rather
+    than the current approach of creating a new one for each client.
+    """
+    if self.clientSocket != None:
+      self.clientSocket.close()
+    self.clientSocket = socket
+
+class usetraxdb:
+  """
+  usetraxdb - data storage daemon for usetrax
+
+  usetraxdb [-h -v] [--log=path] [--port=int] &
+
+  Options:
+
+    -h
+      Show this information, then exit
+
+    -v
+      Print version, then exit
+
+    --log=path
+      Path to daemon log file.  Defaults to stdout.
+
+    --port=int
+      Port to listen on.  Defaults to 7734.
+  """
+
+  VERSION = '1.0'
+
+  def __init__(self):
+
+    # Parse options and store into self
+    parser = OptionParser(
+      add_help_option=False, version="%prog " + str(self.__class__.VERSION)
+    )
+    parser.add_option('-h', action='store_true')
+    parser.add_option('-v', action='store_true')
+    parser.add_option('--log', type='str')
+    parser.add_option('--port', type='int')
+
+    (options, args) = parser.parse_args()
+    if options.h:
+      help(self.__class__)
+      sys.exit(0)
+    if options.v:
+      parser.print_version()
+      sys.exit(1)
+
+    self.logpath = None
+    if options.log:
+      self.logpath = options.log
+    self.port = 7734
+    if options.port:
+      self.port = int(options.port)
+
+    # Open the DB connection
+    # TODO: this stuff should probably be in command-line opts or config file
+    self.db = MySQLdb.connect(
+      host = "localhost",
+      user = "usetrax",
+      passwd = "pigspy",
+      db = "usetrax",
+      unix_socket = "/var/opt/rocks/mysql/mysql.sock"
+    )
+
+    # Open the listening socket
+    self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    self.server.bind((socket.gethostname(), self.port))
+    self.server.listen(5)
+
+    self.lock = Lock()
+
+    # Close stdin
+    sys.stdin.close()
+    os.close(0)
+
+    # Daemon: wait for connections, spawn a thread for each
+    while 1:
+      try:
+        (clientSocket, clientAddress) = self.server.accept()
+        child = ClientHandler(self)
+        child.set_client_socket(clientSocket)
+        child.start()
+      except:
+        break
+    self.db.close()
+    self.server.close()
+
+  def get_attr(self, server, client, timestamp, attr):
+    """
+    Returns a list of server/client/attribute/timestamp/value tuples for
+    a specified specified server/client/attribute stored most recently before a
+    specified timestamp.
+    """
+    self.log(
+      "get_attr('%s', '%s', '%s', '%s')" % (server, client, timestamp, attr)
+    )
+    # Getting the value w/the largest timestamp is prohibitively expensive
+    # in SQL (requires a complex join), so just get the whole history, then
+    # return the latest value for each server/client/attribute.
+    result = { }
+    for value in self.get_hist(server, client, timestamp, attr):
+      results["%s-%s-%s" % (value[0], value[1], value[2])] = value
+    return result.values()
+
+  def get_clients(self, server, range):
+    """
+    """
+    self.log("get_clients('%s', '%s')" % (server, range))
+    (earliest, latest) = self.parse_range(range)
+    where = "timestamp >= %d AND timestamp <= %d" % self.parse_range(range)
+    where += " AND server = '%s'" % server
+    sql = """SELECT DISTINCT client FROM attributes
+             WHERE %s""" % where
+    self.log(sql)
+    self.lock.acquire()
+    cursor = self.db.cursor()
+    cursor.execute(sql)
+    result = [item for sublist in cursor.fetchall() for item in sublist]
+    self.lock.release()
+    return result
+
+  def get_hist(self, server, client, range, attr):
+    """
+    Returns a list of server/client/attribute/timestamp/value tuples for a
+    specified server/client/attribute stored in the database over a specified
+    timestamp range.
+    """
+    self.log(
+      "get_hist('%s', '%s', '%s', '%s')" % (server, client, range, attr)
+    )
+    where = "timestamp >= %d AND timestamp <= %d" % self.parse_range(range)
+    if attr != '*':
+      where += " AND attr = '%s'" % attr
+    if client != '*':
+      where += " AND client = '%s'" % client
+    if server != '*':
+      where += " AND server = '%s'" % server
+    sql = """SELECT server, client, attr, timeStamp, value
+             FROM attributes
+             WHERE %s
+             ORDER BY server, client, attr, timeStamp""" % where
+    self.log(sql)
+    self.lock.acquire()
+    cursor = self.db.cursor()
+    cursor.execute(sql)
+    result = cursor.fetchall()
+    self.lock.release()
+    return result
+
+  def get_sum(self, server, client, range, attr):
+    """
+    Returns a list of server/client/attribute/sum tuples for a specified
+    server/client/attribute stored in the database over a specified timestamp
+    range.
+    """
+    self.log(
+      "get_sum('%s', '%s', '%s', '%s')" % (server, client, range, attr)
+    )
+    where = "timestamp >= %d AND timestamp <= %d" % self.parse_range(range)
+    if attr != '*':
+      where += " AND attr = '%s'" % attr
+    if client != '*':
+      where += " AND client = '%s'" % client
+    if server != '*':
+      where += " AND server = '%s'" % server
+    sql = """SELECT server, client, attr, SUM(value)
+             FROM attributes
+             WHERE %s
+             GROUP BY server, client, attr
+             ORDER BY server, client, attr""" % where
+    self.log(sql)
+    self.lock.acquire()
+    cursor = self.db.cursor()
+    cursor.execute(sql)
+    result = cursor.fetchall()
+    self.lock.release()
+    return result
+
+  def set_attr(self, server, client, timestamp, attr, value):
+    """
+    Records in the database a specified attribute/value pair for a specified
+    server/client/timestamp.
+    """
+    self.log("set_attr('%s', '%s', '%s', '%s', '%s')" % \
+                       (server, client, timestamp, attr, value))
+    sql = """INSERT INTO attributes(server, client, timestamp, attr, value)
+             VALUES ('%s', '%s', %d, '%s', '%s')""" % \
+             (server, client, int(timestamp), attr, value)
+    self.log(sql)
+    self.lock.acquire()
+    cursor = self.db.cursor()
+    cursor.execute(sql)
+    self.lock.release()
+
+  def log(self, message):
+    """
+    Records a specified messsage in the daemon log file.  If the message is
+    None, records the most recent exception traceback.
+    """
+    if self.logpath:
+      log = open(self.logpath, 'a+')
+      if message:
+        log.write(message)
+        log.write("\n")
+      else:
+        traceback.print_exc(None, log)
+      log.close()
+    else:
+      if message:
+        print message
+      else:
+        traceback.print_exc()
+      sys.stdout.flush()
+
+  def parse_range(self, range):
+    """
+    Returns a tuple that represents the endpoints of a specified time range,
+    of the format [[begin]-][end].  begin defaults to 0, end to the current
+    time. A range of "*" is equivalent to "-".
+    """
+    if range == '*':
+      range = '-'
+    if range.find('-') >= 0:
+      (earliest, latest) = range.split('-', 1)
+    else:
+      (earliest, latest) = ('', range)
+    if earliest == '':
+      earliest = 0
+    else:
+      earliest = int(earliest)
+    if latest == '':
+      latest = time.time()
+    else:
+      latest = int(latest)
+    return (earliest, latest)
+
+usetraxdb()
