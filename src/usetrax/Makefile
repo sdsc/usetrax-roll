@@ -64,7 +64,7 @@ build:
 
 install::
 	mkdir -p -m 755 $(ROOT)/$(PKGROOT)
-	cp -r $(SOURCE)/* $(ROOT)/$(PKGROOT)
+	cp -r usetrax/* $(ROOT)/$(PKGROOT)
 	chmod 0755 $(ROOT)/$(PKGROOT)/*
 
 clean::
