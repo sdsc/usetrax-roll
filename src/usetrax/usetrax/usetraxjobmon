@@ -2,7 +2,10 @@
 
 from optparse import OptionParser
 import commands
+from ConfigParser import SafeConfigParser
+import daemon
 import os
+from os.path import expanduser
 import re
 import socket
 import sys
@@ -12,8 +15,10 @@ class usetraxjobmon:
   """
   usetraxjobmon - batch job monitor daemon for usetrax
 
-  usetraxjobmon [-h -v] [--log=path] [--pause=int] [--resource=str]
-                [--server=str] &
+  usetraxjobmon [-h -v] [--config=path]
+
+ [--log=path] [--pause=int] [--resource=str]
+                [--server=str]
 
   This program parses the output of qstat to send batch job information
   to a usetrax data base daemon.
@@ -26,17 +31,23 @@ class usetraxjobmon:
     -v
       Print version, then exit
 
-    --log=path
+    --config=path
+      Path to daemon config file.  Defaults to ~/.usetrax.
+
+  Configuration options for usetraxjobmon are in section [jobmon].
+  Config file options:
+
+    log: path
       Path to monitor log file.   Defaults to "usetraxjobmon.log".
 
-    --pause=int
+    pause: int
       The number of seconds to sleep between monitoring.  Defaults to 300.
 
-    --resource=str
+    resource: str
       The name of the resource being monitored.  Default is derived from
       the host name.
 
-    --server=str
+    server: str
       Contact information for the usetrax daemon; format host[:port].
       Defaults to sending messages only to log file.
   """
@@ -51,10 +62,7 @@ class usetraxjobmon:
     )
     parser.add_option('-h', action='store_true')
     parser.add_option('-v', action='store_true')
-    parser.add_option('--log', type='string')
-    parser.add_option('--pause', type='int')
-    parser.add_option('--resource', type='string')
-    parser.add_option('--server', type='string')
+    parser.add_option('--config', type='string')
 
     (options, args) = parser.parse_args()
     if options.h:
@@ -64,20 +72,27 @@ class usetraxjobmon:
       parser.print_version()
       sys.exit(1)
 
-    self.logpath = 'usetraxjobmon.log'
-    if options.log:
-      self.logpath = options.log
-    self.pause = 300
-    if options.pause != None:
-      self.pause = options.pause
-    self.resource = re.split('[-\.]', commands.getoutput('/bin/hostname'))[0]
-    if options.resource:
-      self.resource = options.resource
-    self.server = None
-    if options.server:
-      self.server = options.server
+    self.config = expanduser('~') + '/.usetrax'
+    if options.config:
+      self.config = options.config
 
-    # Open a connection to the usetrax daemon
+    self.logpath = 'usetraxjobmon.log'
+    self.pause = 300
+    self.resource = re.split('[-\.]', commands.getoutput('/bin/hostname'))[0]
+    self.server = None
+
+    parser = SafeConfigParser()
+    parser.read(self.config)
+    if parser.has_option('jobmon', 'log'):
+      self.logpath = parser.get('jobmon', 'log')
+    if parser.has_option('jobmon', 'pause'):
+      self.pause = parsr.getint('jobmon', 'pause')
+    if parser.has_option('jobmon', 'resource'):
+      self.resource = parser.get('jobmon', 'resource')
+    if parser.has_option('jobmon', 'server'):
+      self.server = parser.get('jobmon', 'server')
+
+    # If appropriate, open a connection to the usetrax daemon
     self.serverSocket = None
     if self.server:
       self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -86,9 +101,27 @@ class usetraxjobmon:
         (addr, port) = self.server.split(':', 1)
       self.serverSocket.connect((addr, int(port)))
 
-    # Close stdin
-    sys.stdin.close()
-    os.close(0)
+  def log(self, message):
+    """
+    TODO
+    """
+    if self.logfile:
+      self.logfile.write(message + "\n")
+
+  def report(self, message):
+    """
+    TODO
+    """
+    if self.serverSocket:
+      self.serverSocket.send(message + "\n")
+      # Receive and discard ack
+      self.serverSocket.recv(256)
+    self.log(message)
+
+  def run(self):
+    """
+    TODO
+    """
 
     host_jobs_reported = { }
     host_users_reported = { }
@@ -130,21 +163,14 @@ class usetraxjobmon:
       self.logfile.close()
       time.sleep(self.pause)
 
-  def log(self, message):
-    """
-    TODO
-    """
-    if self.logfile:
-      self.logfile.write(message + "\n")
-
-  def report(self, message):
-    """
-    TODO
-    """
-    if self.serverSocket:
-      self.serverSocket.send(message + "\n")
-      # Receive and discard ack
-      self.serverSocket.recv(256)
-    self.log(message)
-
-usetraxjobmon()
+monitor = usetraxjobmon()
+context = daemon.DaemonContext()
+# python 2.4 version
+context.open()
+try:
+  monitor.run()
+finally:
+  context.close()
+# python 2.5+ version
+# with daemon.DaemonContext():
+#   monitor.run()
