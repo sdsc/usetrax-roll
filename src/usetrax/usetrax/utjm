@@ -11,14 +11,15 @@ import socket
 import sys
 import time
 
-class usetraxjobmon:
+class utjm:
   """
-  usetraxjobmon - batch job monitor daemon for usetrax
+  utjm - batch job monitor daemon for usetrax
 
-  usetraxjobmon [-h -v] [--config=path]
+  utjm [-h -v] [--config=path] [--log=path] [--pause=int]
+       [--resource=str] [--server=str]
 
-  This program parses the output of qstat to send batch job information
-  to a usetrax data base daemon.
+  This program parses qstat output to send batch job information to a
+  usetrax data base daemon (utdb).
 
   Options:
 
@@ -29,13 +30,17 @@ class usetraxjobmon:
       Print version, then exit
 
     --config=path
-      Path to daemon config file.  Defaults to ~/.usetrax.
+      Path to usetrax config file.  Defaults to ~/.usetrax.
 
-  Configuration options for usetraxjobmon are in section [jobmon].
+    Other command-line options correspond to the configuration file
+    options listed below.  If an option appears both on the command line
+    and in the config file, the command line value takes precedence.
+
+  Configuration options for utjm are in section [utjm].
   Config file options:
 
     log: path
-      Path to monitor log file.   Defaults to "usetraxjobmon.log".
+      Path to monitor log file.   Defaults to "/var/log/utjm.log".
 
     pause: int
       The number of seconds to sleep between monitoring.  Defaults to 300.
@@ -45,8 +50,8 @@ class usetraxjobmon:
       the host name.
 
     server: str
-      Contact information for the usetrax daemon; format host[:port].
-      Defaults to sending messages only to log file.
+      Contact information for the utdb daemon; format host[:port].
+      Defaults to only logging batch job information--no utdb connection.
   """
 
   VERSION = '1.0'
@@ -60,6 +65,10 @@ class usetraxjobmon:
     parser.add_option('-h', action='store_true')
     parser.add_option('-v', action='store_true')
     parser.add_option('--config', type='string')
+    parser.add_option('--log', type='string')
+    parser.add_option('--pause', type='int')
+    parser.add_option('--resource', type='string')
+    parser.add_option('--server', type='string')
 
     (options, args) = parser.parse_args()
     if options.h:
@@ -73,21 +82,29 @@ class usetraxjobmon:
     if options.config:
       self.config = options.config
 
-    self.logpath = 'usetraxjobmon.log'
+    self.logpath = '/var/log/utjm.log'
     self.pause = 300
     self.resource = re.split('[-\.]', commands.getoutput('/bin/hostname'))[0]
     self.server = None
 
     parser = SafeConfigParser()
     parser.read(self.config)
-    if parser.has_option('jobmon', 'log'):
-      self.logpath = parser.get('jobmon', 'log')
-    if parser.has_option('jobmon', 'pause'):
-      self.pause = parsr.getint('jobmon', 'pause')
-    if parser.has_option('jobmon', 'resource'):
-      self.resource = parser.get('jobmon', 'resource')
-    if parser.has_option('jobmon', 'server'):
-      self.server = parser.get('jobmon', 'server')
+    if options.log:
+      self.logpath = options.log
+    elif parser.has_option('utjm', 'log'):
+      self.logpath = parser.get('utjm', 'log')
+    if options.pause != None:
+      self.pause = options.pause
+    elif parser.has_option('utjm', 'pause'):
+      self.pause = parser.getint('utjm', 'pause')
+    if options.resource:
+      self.resource = options.resource
+    elif parser.has_option('utjm', 'resource'):
+      self.resource = parser.get('utjm', 'resource')
+    if options.server:
+      self.server = options.server
+    elif parser.has_option('utjm', 'server'):
+      self.server = parser.get('utjm', 'server')
 
     # If appropriate, open a connection to the usetrax daemon
     self.server_socket = None
@@ -100,7 +117,7 @@ class usetraxjobmon:
 
   def log(self, message):
     """
-    TODO
+    A convenience method for writing a message to the log file.
     """
     logfile = open(self.logpath, 'a+')
     logfile.write(message + "\n")
@@ -108,7 +125,7 @@ class usetraxjobmon:
 
   def report(self, message):
     """
-    TODO
+    A convenience method for sending a message to the utdb daemon.
     """
     self.log(message)
     if self.server_socket:
@@ -118,7 +135,8 @@ class usetraxjobmon:
 
   def run(self):
     """
-    TODO
+    utjm daemon body.  Wake periodically to sample qsub and report any
+    change in host/job and host/user mapping to the utdb daemon.
     """
 
     host_jobs_reported = { }
@@ -166,7 +184,7 @@ class usetraxjobmon:
 
       self.log('%s' % x)
 
-monitor = usetraxjobmon()
+monitor = utjm()
 context = daemon.DaemonContext()
 context.files_preserve = [monitor.server_socket]
 # python 2.4 version
