@@ -1,14 +1,17 @@
 #!/bin/env python
 
+from ConfigParser import SafeConfigParser
+import daemon
+import MySQLdb
 from optparse import OptionParser
 import os
+from os.path import expanduser
 import re
 import socket
 import sys
 import time
-import traceback
 from threading import Lock,Thread
-import MySQLdb
+import traceback
 
 class ClientHandler(Thread): 
   """
@@ -17,12 +20,12 @@ class ClientHandler(Thread):
 
   def __init__(self, parent):
     Thread.__init__(self)
-    self.clientSocket = None
+    self.client_socket = None
     self.parent = parent
 
   def run(self):
 
-    if self.clientSocket == None:
+    if self.client_socket == None:
       return
 
     while True:
@@ -74,8 +77,8 @@ class ClientHandler(Thread):
         self.parent.log(None)
         break
 
-    self.clientSocket.close()
-    self.clientSocket = None
+    self.client_socket.close()
+    self.client_socket = None
 
   def recv(self):
     """
@@ -83,7 +86,7 @@ class ClientHandler(Thread):
     """
     result = ''
     while not result.endswith("\n"):
-      chunk = self.clientSocket.recv(256)
+      chunk = self.client_socket.recv(256)
       if chunk == '':
         return None
       result += chunk
@@ -94,7 +97,7 @@ class ClientHandler(Thread):
     A convenience method for sending a message to the client.
     """
     self.parent.log("Send '%s'" % message)
-    self.clientSocket.send(message + "\n")
+    self.client_socket.send(message + "\n")
 
   def set_client_socket(self, socket):
     """
@@ -102,15 +105,15 @@ class ClientHandler(Thread):
     possibile future use of allocation from a pool of ClientHandlers, rather
     than the current approach of creating a new one for each client.
     """
-    if self.clientSocket != None:
-      self.clientSocket.close()
-    self.clientSocket = socket
+    if self.client_socket != None:
+      self.client_socket.close()
+    self.client_socket = socket
 
 class usetraxdb:
   """
   usetraxdb - data storage daemon for usetrax
 
-  usetraxdb [-h -v] [--log=path] [--port=int] &
+  usetraxdb [-h -v] [--config=path]
 
   Options:
 
@@ -120,10 +123,28 @@ class usetraxdb:
     -v
       Print version, then exit
 
-    --log=path
-      Path to daemon log file.  Defaults to stdout.
+    --config=path
+      Path to daemon config file.  Defaults to ~/.usetrax.
 
-    --port=int
+  Configuration options for usetraxdb are in section [db].
+  Config file options:
+
+    dbname: str
+      The MySQL data base name.  Defaults to "usetrax".
+
+    dbpass: str
+      The MySQL user password.  Defaults to "usetrax".
+
+    dbpass: path
+      The path to the MySQL server socket.
+
+    dbuser: str
+      The MySQL user name.  Defaults to "usetrax".
+
+    log: path
+      Path to monitor log file.   Defaults to "usetraxdb.log".
+
+    port: int
       Port to listen on.  Defaults to 7734.
   """
 
@@ -137,8 +158,7 @@ class usetraxdb:
     )
     parser.add_option('-h', action='store_true')
     parser.add_option('-v', action='store_true')
-    parser.add_option('--log', type='str')
-    parser.add_option('--port', type='int')
+    parser.add_option('--config', type='string')
 
     (options, args) = parser.parse_args()
     if options.h:
@@ -148,21 +168,39 @@ class usetraxdb:
       parser.print_version()
       sys.exit(1)
 
-    self.logpath = None
-    if options.log:
-      self.logpath = options.log
+    self.config = expanduser('~') + '/.usetrax'
+    if options.config:
+      self.config = options.config
+
+    self.dbname = 'usetrax'
+    self.dbpass = 'usetrax'
+    self.dbuser = 'usetrax'
+    self.dbsock = '/var/opt/rocks/mysql/mysql.sock'
+    self.logpath = 'usetraxdb.log'
     self.port = 7734
-    if options.port:
-      self.port = int(options.port)
+
+    parser = SafeConfigParser()
+    parser.read(self.config)
+    if parser.has_option('db', 'dbname'):
+      self.dbname = parser.get('db', 'dbname')
+    if parser.has_option('db', 'dbpass'):
+      self.dbpass = parser.get('db', 'dbpass')
+    if parser.has_option('db', 'dbsock'):
+      self.dbsock = parser.get('db', 'dbsock')
+    if parser.has_option('db', 'dbuser'):
+      self.dbuser = parser.get('db', 'dbuser')
+    if parser.has_option('db', 'log'):
+      self.logpath = parser.get('db', 'log')
+    if parser.has_option('db', 'port'):
+      self.port = parser.getint('db', 'port')
 
     # Open the DB connection
-    # TODO: this stuff should probably be in command-line opts or config file
     self.db = MySQLdb.connect(
-      host = "localhost",
-      user = "usetrax",
-      passwd = "pigspy",
-      db = "usetrax",
-      unix_socket = "/var/opt/rocks/mysql/mysql.sock"
+      host = 'localhost',
+      user = self.dbuser,
+      passwd = self.dbpass,
+      db = self.dbname,
+      unix_socket = self.dbsock
     )
 
     # Open the listening socket
@@ -173,16 +211,14 @@ class usetraxdb:
 
     self.lock = Lock()
 
-    # Close stdin
-    sys.stdin.close()
-    os.close(0)
+  def run(self):
 
-    # Daemon: wait for connections, spawn a thread for each
+    # wait for connections, spawn a thread for each
     while 1:
       try:
-        (clientSocket, clientAddress) = self.server.accept()
+        (client_socket, clientAddress) = self.server.accept()
         child = ClientHandler(self)
-        child.set_client_socket(clientSocket)
+        child.set_client_socket(client_socket)
         child.start()
       except:
         break
@@ -338,4 +374,15 @@ class usetraxdb:
       latest = int(latest)
     return (earliest, latest)
 
-usetraxdb()
+utdb = usetraxdb()
+context = daemon.DaemonContext()
+context.files_preserve = [utdb.server]
+# python 2.4 version
+context.open()
+try:
+  utdb.run()
+finally:
+  context.close()
+# python 2.5+ version
+# with daemon.DaemonContext():
+#   monitor.run()
