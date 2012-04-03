@@ -1,23 +1,26 @@
 #!/bin/env python
 
-from optparse import OptionParser
+from ConfigParser import SafeConfigParser
 import commands
+from optparse import OptionParser
+from os.path import expanduser
 import re
 import socket
 import subprocess
 import sys
 import time
 
-class usetraxnetmon:
+class utnm:
   """
-  usetraxnetmon - network traffic monitor daemon for usetrax
+  utnm - network traffic monitor daemon for usetrax
 
-  usetraxnetmon [-h -v] [--iface=str] [--ifconfig=path] [--localaddr=pat]
-                [--packets=int] [--pause=int] [--promiscuous=y/n]
-                [--run=int[smhd]] [--server=str] [--tcpdump=path]
+  utnm [-h -v] [--config=path] [--iface=str] [--ifconfig=path]
+       [--localaddr=pat] [--log=path] [--packets=int] [--pause=int]
+       [--promiscuous=y/n] [--run=int[smhd]] [--server=str]
+       [--tcpdump=path]
 
   This program uses tcpdump to sample traffic on a network interface and
-  sends summary statistics to a usetrax data base daemon.
+  sends summary statistics to a usetrax data base daemon (utdb).
 
   Options:
 
@@ -27,38 +30,52 @@ class usetraxnetmon:
     -v
       Print version, then exit
 
-    --iface=str
+    --config=path
+      Path to usetrax config file.  Defaults to ~/.usetrax.
+
+    Other command-line options correspond to the configuration file
+    options listed below.  If an option appears both on the command line
+    and in the config file, the command line value takes precedence.
+
+  Configuration options for utnm are in section [utnm].
+  Config file options:
+
+    iface: str
       The interface to monitor.  Defaults to eth0.
 
-    --ifconfig=path
+    ifconfig: path
       Path to ifconfig program.  Default to /sbin/ifconfig.
 
-    --localaddr=pat
+    localaddr: pat
       A pattern to match the local addresses assigned to the monitored
-      interface.  If not specified, the program parses the output of ifconfig
-      to obtain the address.
+      interface.  If not specified, the program parses the output of
+      ifconfig to obtain the address.
 
-    --packets=int
-      The number of r/w packets to analyze in each sample.  Defaults to 10000.
+    log: path
+      Path to monitor log file.   Defaults to "/var/log/utnm.log".
 
-    --pause=int
+    packets: int
+      The number of r/w packets to analyze in each sample.  Defaults to
+      10000.
+
+    pause: int
       The number of seconds to sleep between samples.  Defaults to 5.
 
-    --promiscuous=y/n
+    promiscuous: y/n
       Whether to run tcpdump with the interface in promiscuous mode.
       The default is 'n'; on some systems (e.g., Solaris), this will
       prevent the program from seeing outbound packets.
 
-    --run=int[smhd]
+    run: int[smhd]
       Exit after running for the specified seconds/minutes/hours/days
       (defaults to 'h').  By default the program continues running until
       killed.
 
-    --server=str
+    server: str
       Contact information for the usetrax daemon; format host[:port].
       Defaults to printing messages to stdout for debugging.
 
-    --tcpdump=path
+    tcpdump: path
       Path to tcpdump program.  Default to /usr/sbin/tcpdump.
   """
 
@@ -72,6 +89,7 @@ class usetraxnetmon:
     )
     parser.add_option('-h', action='store_true')
     parser.add_option('-v', action='store_true')
+    parser.add_option('--config', type='string')
     parser.add_option('--iface', type='string')
     parser.add_option('--ifconfig', type='string')
     parser.add_option('--localaddr', type='string')
@@ -90,146 +108,193 @@ class usetraxnetmon:
       parser.print_version()
       sys.exit(1)
 
-    self.ifconfig = '/sbin/ifconfig'
-    if options.ifconfig:
-      self.ifconfig = options.ifconfig
+    self.config = expanduser('~') + '/.usetrax'
+    if options.config:
+      self.config = options.config
+
     self.iface = 'eth0'
+    self.ifconfig = '/sbin/ifconfig'
+    self.localaddr = None
+    self.logpath = '/var/log/utnm.log'
+    self.packets = 10000
+    self.pause = 5
+    self.promiscuous = False
+    self.run = None
+    self.server = None
+    self.tcpdump = '/usr/sbin/tcpdump'
+
+    parser = SafeConfigParser()
+    parser.read(self.config)
     if options.iface:
       self.iface = options.iface
-    output = commands.getoutput(self.ifconfig + ' ' + self.iface)
-    matchInfo = re.search('inet (addr:)?([\.0-9]+)', output)
-    if not matchInfo:
-      print 'Unknown interface ' + self.iface
-      sys.exit(1)
-    self.localaddr = matchInfo.group(2)
+    elif parser.has_option('utnm', 'iface'):
+      self.iface = parser.get_option('utnm', 'iface')
+    if options.ifconfig:
+      self.ifconfig = options.ifconfig
+    elif parser.has_option('utnm', 'ifconfig'):
+      self.ifconfig = parser.get_option('utnm', 'ifconfig')
     if options.localaddr:
       self.localaddr = options.localaddr
-    self.packets = 10000
+    elif parser.has_option('utnm', 'localaddr'):
+      self.localadd = parser.get_option('utnm', 'localaddr')
+    if options.log:
+      self.logpath = options.log
+    elif parser.has_option('utnm', 'log'):
+      self.logpath = parser.get_option('utnm', 'log')
     if options.packets:
       self.packets = options.packets
-    self.pause = 5
+    elif parser.has_option('utnm', 'packets'):
+      self.packets = parser.get_int('utnm', 'packets')
     if options.pause != None:
       self.pause = options.pause
-    self.promiscuous = False
+    elif parser.has_option('utnm', 'pause'):
+      self.pause = parser.get_int('utnm', 'pause')
     if options.promiscuous:
       self.promiscuous = options.promiscuous == 'y'
-    self.endTime = None
+    elif parser.has_option('utnm', 'promiscuous'):
+      self.promiscuous = parser.get_option('utnm', 'promiscuous') == 'y'
     if options.run:
-      self.endTime = int(time.time())
-      matchInfo = re.match('^(\d+)([sSmMhHdD])?$', options.run)
-      if not matchInfo:
+      self.run = options.run
+    elif parser.has_option('utnm', 'run'):
+      self.run = parser.get_option('utnm', 'run')
+    if options.server:
+      self.server = options.server
+    elif parser.has_option('utnm', 'server'):
+      self.run = parser.get_option('utnm', 'server')
+    if options.tcpdump:
+      self.tcpdump = options.tcpdump
+    elif parser.has_option('utnm', 'tcpdump'):
+      self.run = parser.get_option('utnm', 'tcpdump')
+
+    output = commands.getoutput(self.ifconfig + ' ' + self.iface)
+    match_info = re.search('inet (addr:)?([\.0-9]+)', output)
+    if not match_info:
+      print 'Unknown interface ' + self.iface
+      sys.exit(1)
+    if not self.localaddr:
+      self.localaddr = match_info.group(2)
+    self.end_time = None
+    if self.run:
+      self.end_time = int(time.time())
+      match_info = re.match('^(\d+)([sSmMhHdD])?$', self.run)
+      if not match_info:
         help(self.__class__)
         sys.exit(1)
-      bump = int(matchInfo.group(1))
-      if matchInfo.group(2):
-        unit = matchInfo.group(2).lower()
+      bump = int(match_info.group(1))
+      if match_info.group(2):
+        unit = match_info.group(2).lower()
       else:
         unit = 'h'
       if unit == 's':
-        self.endTime += bump
+        self.end_time += bump
       elif unit == 'm':
-        self.endTime += bump * 60
+        self.end_time += bump * 60
       elif unit == 'h':
-        self.endTime += bump * 60 * 60
+        self.end_time += bump * 60 * 60
       else:
-        self.endTime += bump * 60 * 60 * 24
-    self.server = None
-    if options.server:
-      self.server = options.server
-    self.tcpdump = '/usr/sbin/tcpdump'
-    if options.tcpdump:
-      self.tcpdump = options.tcpdump
+        self.end_time += bump * 60 * 60 * 24
 
     # Open a connection to the usetrax daemon
-    self.serverSocket = None
+    self.server_socket = None
     if self.server:
-      self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
       (addr, port) = (self.server, 7734)
       if self.server.find(':') >= 0:
         (addr, port) = self.server.split(':', 1)
-      self.serverSocket.connect((addr, int(port)))
+      self.server_socket.connect((addr, int(port)))
 
-    self.clientTraffic = { }
-    tcpdumpWords = [
+    self.client_traffic = { }
+    tcpdump_words = [
       self.tcpdump, '-c', str(self.packets), '-i', self.iface, '-nn'
     ]
     if not self.promiscuous:
-      tcpdumpWords.append('-p')
+      tcpdump_words.append('-p')
     # Only care about push packets
-    tcpdumpWords.append('tcp[13] & 8 == 8')
+    tcpdump_words.append('tcp[13] & 8 == 8')
 
-    while (1):
+    while True:
 
-      startTime = int(time.time())
-      if self.endTime and startTime >= self.endTime:
+      start_time = int(time.time())
+      if self.end_time and start_time >= self.end_time:
         break
 
       # Collect stdout from a tcpdump process that monitors push packets
-      print ' '.join(tcpdumpWords)
-      tcpdump = subprocess.Popen(tcpdumpWords,stdout=subprocess.PIPE,bufsize=0)
+      print ' '.join(tcpdump_words)
+      tcpdump = subprocess.Popen(tcpdump_words,stdout=subprocess.PIPE,bufsize=0)
 
       for line in tcpdump.stdout:
-        unusedLines = 0
+        unused_lines = 0
         # Sample tcpdump output:
         # 11:49:35.379446 IP 198.202.118.30.1023 > 172.25.33.246.988: P 2842811501:2842811789(288) ack 280752543 win 126
         (ts, prot, src, arrow, dst, flags, size, tail)=re.split('\s+', line, 7)
         # Parse the packet size and source and destination ips.  TODO: the
         # ports stripped from the source and destination might be used to
         # differentiate multiple clients on a single machine.
-        matchInfo = re.search('\((\d+)\)', size)
-        if not matchInfo:
-          unusedLines += 1
+        match_info = re.search('\((\d+)\)', size)
+        if not match_info:
+          unused_lines += 1
           continue
-        size = int(matchInfo.group(1))
-        matchInfo = re.match('^(.*)\.(\d+)$', src)
-        (srcAddr, srcPort) = (matchInfo.group(1), matchInfo.group(2))
-        matchInfo = re.match('^(.*)\.(\d+):$', dst)
-        (dstAddr, dstPort) = (matchInfo.group(1), matchInfo.group(2))
+        size = int(match_info.group(1))
+        match_info = re.match('^(.*)\.(\d+)$', src)
+        (src_addr, src_port) = (match_info.group(1), match_info.group(2))
+        match_info = re.match('^(.*)\.(\d+):$', dst)
+        (dst_addr, dst_port) = (match_info.group(1), match_info.group(2))
         # Match src against local addr to determine if this is a read or write
-        if re.match(self.localaddr, srcAddr):
+        if re.match(self.localaddr, src_addr):
           action = 'read'
-          client = dstAddr
+          client = dst_addr
         else:
           action = 'write'
-          client = srcAddr
+          client = src_addr
         # Update client's traffic record
-        if not self.clientTraffic.has_key(client):
-          self.clientTraffic[client] = {
+        if not self.client_traffic.has_key(client):
+          self.client_traffic[client] = {
             'readBytes': 0,
             'readMessages': 0,
             'writeBytes': 0,
             'writeMessages': 0
           }
-        self.clientTraffic[client][action + 'Bytes'] += size
-        self.clientTraffic[client][action + 'Messages'] += 1
+        self.client_traffic[client][action + 'Bytes'] += size
+        self.client_traffic[client][action + 'Messages'] += 1
         # If traffic is sparse, periodically report to the usetrax daemon and
         # flush so that we're not summarizing over too long a period
-        if int(time.time()) - startTime >= 5:
-          self.reportTraffic()
-          startTime = int(time.time())
+        if int(time.time()) - start_time >= 5:
+          self.report_traffic()
+          start_time = int(time.time())
 
-      self.reportTraffic()
+      self.report_traffic()
       if self.pause > 0:
         time.sleep(self.pause)
 
-  def reportTraffic(self):
+  def report_traffic(self):
     """
-    Reports traffic information collected so far to the usetrax daemon, then
-    reinitializes the information collection.
+    Reports traffic information collected so far to the usetrax daemon,
+    then reinitializes the information collection.
     """
     server = commands.getoutput('/bin/hostname');
     now = int(time.time())
-    for client in self.clientTraffic.keys():
-      ct = self.clientTraffic[client]
+    for client in self.client_traffic.keys():
+      ct = self.client_traffic[client]
       for attr in ct.keys():
         message = "SET %s %s %s %s %s\n" % (server, client, now, attr, ct[attr])
-        if self.serverSocket:
-          self.serverSocket.send(message)
+        if self.server_socket:
+          self.server_socket.send(message)
           # Receive and discard ack
-          self.serverSocket.recv(256)
+          self.server_socket.recv(256)
         else:
           print message
           sys.stdout.flush()
-    self.clientTraffic = { }
+    self.client_traffic = { }
 
-usetraxnetmon()
+monitor = utnm()
+context = daemon.DaemonContext()
+context.files_preserve = [monitor.server_socket]
+# python 2.4 version
+context.open()
+try:
+  monitor.run()
+finally:
+  context.close()
+# python 2.5+ version
+# with daemon.DaemonContext():
+#   monitor.run()
