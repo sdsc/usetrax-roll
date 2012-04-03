@@ -1,7 +1,9 @@
 #!/bin/env python
 
-from optparse import OptionParser
+from ConfigParser import SafeConfigParser
 import datetime
+from optparse import OptionParser
+from os.path import expanduser
 import re
 import socket
 import sys
@@ -11,8 +13,8 @@ class usetrax:
   """
   usetrax - show resource usage info collected by the usetrax daemon
 
-  usetrax [-h -v] [--end=time] [--server=str] [--start=time] [--step=int]
-          [--sum=str] resource
+  usetrax [-h -v] [--config=path] [--end=time] [--resource=str]
+          [--server=str] [--start=time] [--step=int] [--sum=str]
 
   Options:
 
@@ -22,26 +24,38 @@ class usetrax:
     -v
       Print version, then exit
 
-    --end=time
+    --config=path
+      Path to usetrax config file.  Defaults to ~/.usetrax.
+
+    Other command-line options correspond to the configuration file
+    options listed below.  If an option appears both on the command line
+    and in the config file, the command line value takes precedence.
+
+  Configuration options for usetrax are in section [usetrax].
+  Config file options:
+
+    end: time
       The end of the time range to display; defaults to the current time.
       The time specification may be given as an integer (seconds since epoch),
       a string of the format "-nn[smhd]" (number of seconds/minutes/hours/days
       before the current time, defaults to minutes), or a date/time string of
       the format "YYYY-MM-DD:HH:MM[:SS]".
 
-    --server=str
-      The usetraxd server to contact to retrive usage information.  The format
-      is "host[:port]".  Defaults to localhost:7734.
-      
-    --start=time
+    resource: str
+      The name of the resource to report.  Defaults to '*'.
+
+    server: str
+      Contact information for the utdb daemon; format host[:port].
+
+    start: time
       The beginning of the time range to display; defaults to 0.  See --end
       for time format.
 
-    --step=int
+    step: int
       Summarize usage information every int seconds throughout the start/end
       range.  Summarizes the entire range by default.
 
-    --sum=str
+    sum: str
       Sum usage information by a resource attribute.  Curently supports
       attributes "job" and "user".
   """
@@ -56,9 +70,11 @@ class usetrax:
     )
     parser.add_option('-h', action='store_true')
     parser.add_option('-v', action='store_true')
+    parser.add_option('--config', type='string')
+    parser.add_option('--end', type='string')
+    parser.add_option('--resource', type='string')
     parser.add_option('--server', type='string')
     parser.add_option('--start', type='string')
-    parser.add_option('--end', type='string')
     parser.add_option('--step', type='int')
     parser.add_option('--sum', type='string')
 
@@ -70,100 +86,121 @@ class usetrax:
       parser.print_version()
       sys.exit(1)
 
-    self.server = 'localhost:7734'
-    if options.server:
-      self.server = options.server
-    self.start = 0
-    if options.start:
-      self.start = self.parse_time(options.start)
+    self.config = expanduser('~') + '/.usetrax'
+    if options.config:
+      self.config = options.config
+
     self.end = int(time.time())
+    self.resource = '*'
+    self.server = 'localhost:7734'
+    self.start = 0
+    self.step = None
+    self.sum_by = None
+
+    parser = SafeConfigParser()
+    parser.read(self.config)
+
     if options.end:
       self.end = self.parse_time(options.end)
-    self.step = None
+    elif parser.has_option('usetrax', 'end'):
+      self.end = self.parse_time(parser.get('usetrax', 'end'))
+    if options.resource:
+      self.resource = options.resource
+    elif parser.has_option('usetrax', 'resource'):
+      self.resource = parser.get('usetrax', 'resource')
+    if options.server:
+      self.server = options.server
+    elif parser.has_option('usetrax', 'server'):
+      self.server = parser.get('usetrax', 'server')
+    if options.start:
+      self.start = self.parse_time(options.start)
+    elif parser.has_option('usetrax', 'start'):
+      self.start = self.parse_time(parser.get('usetrax', 'start'))
     if options.step:
       self.step = int(options.step)
-    self.sumBy = None
+    elif parser.has_option('usetrax', 'step'):
+      self.step = parser.get_int('usetrax', 'step')
     if options.sum:
-      self.sumBy = options.sum
-    if len(args) == 1:
-      self.resource = args[0]
-    else:
-      help(self.__class__)
-      sys.exit(0)
+      self.sum_by = options.sum
+    elif parser.has_option('usetrax', 'sum'):
+      self.sum_by = parser.get('usetrax', 'sum')
 
     # Open a connection to the usetrax daemon
     (addr, port) = (self.server, 7734)
     if self.server.find(':') >= 0:
       (addr, port) = self.server.split(':', 1)
-    self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    self.serverSocket.connect((addr, int(port)))
+    self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.server_socket.connect((addr, int(port)))
 
-    # Get host and sum-by information for all clients--quicker than retrieving
-    # it individually for those clients we care about.
-    clientHosts = { }
-    clientSumBy = { }
+    # Get host and sum-by information for all IPs--quicker than retrieving
+    # it individually for those IPs we care about.
+    host_ips = { }
+    ip_hosts = { }
+    ip_sum_by = { }
     # GET inefficient, so use HISTORY even for host attr
+    # HISTORY reply format "OK [server,ip,attr,timestamp,value]..."
     self.send("HISTORY * * %s host" % self.end)
     reply = self.recv()
-    # HISTORY reply format "OK [server,client,attr,timestamp,value]..."
     if reply.startswith('OK ['):
       for item in reply[4:len(reply) - 1].split(']['):
-        (server,client,attr,timestamp,value) = item.split(',')
-        clientHosts[client] = value
-    if self.sumBy:
-      self.send("HISTORY * * 0-%s %s" % (self.end, self.sumBy))
+        (server,ip,attr,timestamp,value) = item.split(',')
+        ip_hosts[ip] = value
+        host_ips[value] = ip
+    if self.sum_by:
+      self.send("HISTORY * * 0-%s %s" % (self.end, self.sum_by))
       reply = self.recv()
       if reply.startswith('OK ['):
         for item in reply[4:len(reply) - 1].split(']['):
-          (server,client,attr,timestamp,value) = item.split(',')
-          if not clientSumBy.has_key(client):
-            clientSumBy[client] = []
-          clientSumBy[client].append((int(timestamp), "%s=%s" % (self.sumBy, value)))
+          (server,ip,attr,timestamp,value) = item.split(',')
+          if host_ips.has_key(ip):
+            # Sum-by value mapped to hostname; switch to IP
+            ip = host_ips.get(ip)
+          if not ip_sum_by.has_key(ip):
+            ip_sum_by[ip] = []
+          ip_sum_by[ip].append((int(timestamp), "%s=%s" % (self.sum_by, value)))
 
     # foreach time step ...
     if not self.step:
       self.step = self.end - self.start + 1
     for timestep in range(self.start, self.end, self.step):
-      endStep = timestep + self.step - 1
-      usageThisStep = { }
-      self.send("SUM %s * %s-%s *" % (self.resource, self.start, endStep))
+      end_step = timestep + self.step - 1
+      usage_this_step = { }
+      self.send("SUM %s * %s-%s *" % (self.resource, self.start, end_step))
       reply = self.recv()
-      # SUM reply format "OK [server,client,attr,sum]..."
+      # SUM reply format "OK [server,ip,attr,sum]..."
       if reply.startswith('OK ['):
-        # foreach server/client/attr/sum tuple from this time step ...
+        # foreach server/ip/attr/sum tuple from this time step ...
         for value in reply[4:len(reply) - 1].split(']['):
-          (server, client, attr, sum) = value.split(',')
+          (server, ip, attr, sum) = value.split(',')
           # Determine "user".  If we're summing job/user and we have a summary
-          # attribute for this client, use that; otherwise, if we have a host
-          # name for the client, use that; otherwise, client (ip address)
-          if clientSumBy.has_key(client) and \
-             timestep >= clientSumBy[client][0][0]:
-            # Pop older values of clientSumBy for this client
-            while len(clientSumBy[client]) > 1 and \
-                  timestep >= clientSumBy[client][1][0]:
-              clientSumBy[client].pop(0)
-            user = clientSumBy[client][0][1]
-          elif clientHosts.has_key(client):
-            user = clientHosts[client]
+          # attribute for this IP, use that; otherwise, if we have a host name
+          # for the IP, use that; otherwise, IP
+          if ip_sum_by.has_key(ip) and timestep >= ip_sum_by[ip][0][0]:
+            # Pop older values of ip_sum_by for this IP
+            while len(ip_sum_by[ip]) > 1 and timestep >= ip_sum_by[ip][1][0]:
+              ip_sum_by[ip].pop(0)
+            user = ip_sum_by[ip][0][1]
+          elif ip_hosts.has_key(ip):
+            user = ip_hosts[ip]
           else:
-            user = client
+            user = ip
           # Add to attribute summary for this "user"
-          if not usageThisStep.has_key(user):
-            usageThisStep[user] = { }
-          if not usageThisStep[user].has_key(attr):
-            usageThisStep[user][attr] = 0
-          usageThisStep[user][attr] += int(float(sum))
+          if not usage_this_step.has_key(user):
+            usage_this_step[user] = { }
+          if not usage_this_step[user].has_key(attr):
+            usage_this_step[user][attr] = 0
+          usage_this_step[user][attr] += int(float(sum))
           # Compute 'total' values that sum per-user reads and writes
           if attr.startswith('read') or attr.startswith('write'):
             totalattr = attr.replace('read', 'total').replace('write', 'total')
-            if not usageThisStep[user].has_key(totalattr):
-              usageThisStep[user][totalattr] = 0
-            usageThisStep[user][totalattr] += int(float(sum))
+            if not usage_this_step[user].has_key(totalattr):
+              usage_this_step[user][totalattr] = 0
+            usage_this_step[user][totalattr] += int(float(sum))
 
-      for user in sorted(usageThisStep.keys()):
+      for user in sorted(usage_this_step.keys()):
         display = "%s %s " % (timestep, user)
-        for attr in sorted(usageThisStep[user].keys()):
-          display += ' %s %s' % (attr, usageThisStep[user][attr])
+        for attr in sorted(usage_this_step[user].keys()):
+          display += ' %s %s' % (attr, usage_this_step[user][attr])
         print display
         sys.stdout.flush()
 
@@ -176,11 +213,11 @@ class usetrax:
     if re.match('^\d+$', s):
       result = int(s)
     elif re.match('^-\d+[dDhHmMsS]?$', s):
-      matchInfo = re.match('^-(\d+)([dDhHmMsS]?)$', s)
-      bump = int(matchInfo.group(1))
+      match_info = re.match('^-(\d+)([dDhHmMsS]?)$', s)
+      bump = int(match_info.group(1))
       ch = 'm'
-      if matchInfo.group(2):
-        ch = matchInfo.group(2).lower()
+      if match_info.group(2):
+        ch = match_info.group(2).lower()
       if ch == 'd':
         result -= bump * 24 * 60 * 60
       elif ch == 'h':
@@ -190,14 +227,14 @@ class usetrax:
       else:
         result -= bump * 60
     elif re.match('^\d\d\d\d-\d\d-\d\d:\d\d', s):
-      matchInfo = re.match('^(\d+)-(\d+)-(\d+):(\d+)(:(\d+))?', s)
+      match_info = re.match('^(\d+)-(\d+)-(\d+):(\d+)(:(\d+))?', s)
       minute = 0
-      if matchInfo.group(6) != None:
-        minute = int(matchInfo.group(6))
-      dt = datetime.datetime(year = int(matchInfo.group(1)),
-                             month = int(matchInfo.group(2)),
-                             day = int(matchInfo.group(3)),
-                             hour = int(matchInfo.group(4)),
+      if match_info.group(6) != None:
+        minute = int(match_info.group(6))
+      dt = datetime.datetime(year = int(match_info.group(1)),
+                             month = int(match_info.group(2)),
+                             day = int(match_info.group(3)),
+                             hour = int(match_info.group(4)),
                              minute = minute)
       result = int(time.mktime(dt.timetuple()))
     else:
@@ -210,7 +247,7 @@ class usetrax:
     """
     result = ''
     while not result.endswith("\n"):
-      chunk = self.serverSocket.recv(2560)
+      chunk = self.server_socket.recv(2560)
       if chunk == '':
         result = None
         break
@@ -227,6 +264,6 @@ class usetrax:
     """
     A convenience method for sending a message to the usetrax daemon.
     """
-    self.serverSocket.send(message + "\n")
+    self.server_socket.send(message + "\n")
 
 usetrax()
