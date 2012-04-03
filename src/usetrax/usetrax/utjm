@@ -1,9 +1,9 @@
 #!/bin/env python
 
-from optparse import OptionParser
 import commands
 from ConfigParser import SafeConfigParser
 import daemon
+from optparse import OptionParser
 import os
 from os.path import expanduser
 import re
@@ -144,7 +144,7 @@ class utjm:
 
     try:
 
-      while 1:
+      while True:
 
         now = int(time.time())
 

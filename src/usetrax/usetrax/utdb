@@ -238,7 +238,7 @@ class utdb:
     """
     utdb daemon body.  Wait for connections, spawn a thread for each.
     """
-    while 1:
+    while True:
       try:
         (client_socket, client_address) = self.server.accept()
         child = ClientHandler(self)
