@@ -41,10 +41,7 @@ class ClientHandler(Thread):
 
       try:
         command = command.upper()
-        if command == 'CLIENTS':
-          (server, range) = re.split("\s+", remainder, 1)
-          self.send('OK ' + ','.join(self.parent.get_clients(server, range)))
-        elif command == 'ECHO':
+        if command == 'ECHO':
           self.send('OK ' + remainder)
         elif command == 'GET':
           (server, client, timestamp, attr) = re.split("\s+", remainder, 3)
@@ -109,11 +106,12 @@ class ClientHandler(Thread):
       self.client_socket.close()
     self.client_socket = socket
 
-class usetraxdb:
+class utdb:
   """
-  usetraxdb - data storage daemon for usetrax
+  utdb - data storage daemon for usetrax
 
-  usetraxdb [-h -v] [--config=path]
+  utdb [-h -v] [--config=path] [--dbname=str] [--dbpass=str]
+       [--dbsock=path] [--dbuser=str] [--log=path] [--port=int]
 
   Options:
 
@@ -126,7 +124,11 @@ class usetraxdb:
     --config=path
       Path to daemon config file.  Defaults to ~/.usetrax.
 
-  Configuration options for usetraxdb are in section [db].
+    Other command-line options correspond to the configuration file
+    options listed below.  If an option appears both on the command line
+    and in the config file, the command line value takes precedence.
+
+  Configuration options for utdb are in section [utdb].
   Config file options:
 
     dbname: str
@@ -138,11 +140,14 @@ class usetraxdb:
     dbpass: path
       The path to the MySQL server socket.
 
+    dbsock: path
+      Path to db server socket.  No default.
+
     dbuser: str
       The MySQL user name.  Defaults to "usetrax".
 
     log: path
-      Path to monitor log file.   Defaults to "usetraxdb.log".
+      Path to monitor log file.   Defaults to "/var/log/utdb.log".
 
     port: int
       Port to listen on.  Defaults to 7734.
@@ -159,6 +164,12 @@ class usetraxdb:
     parser.add_option('-h', action='store_true')
     parser.add_option('-v', action='store_true')
     parser.add_option('--config', type='string')
+    parser.add_option('--dbname', type='string')
+    parser.add_option('--dbpass', type='string')
+    parser.add_option('--dbsock', type='string')
+    parser.add_option('--dbuser', type='string')
+    parser.add_option('--log', type='string')
+    parser.add_option('--port', type='int')
 
     (options, args) = parser.parse_args()
     if options.h:
@@ -175,23 +186,35 @@ class usetraxdb:
     self.dbname = 'usetrax'
     self.dbpass = 'usetrax'
     self.dbuser = 'usetrax'
-    self.dbsock = '/var/opt/rocks/mysql/mysql.sock'
-    self.logpath = 'usetraxdb.log'
+    self.dbsock = None
+    self.logpath = '/var/log/utdb.log'
     self.port = 7734
 
     parser = SafeConfigParser()
     parser.read(self.config)
-    if parser.has_option('db', 'dbname'):
+    if options.dbname:
+      self.dbname = options.dbname
+    elif parser.has_option('db', 'dbname'):
       self.dbname = parser.get('db', 'dbname')
-    if parser.has_option('db', 'dbpass'):
+    if options.dbpass:
+      self.dbpass = options.dbpass
+    elif parser.has_option('db', 'dbpass'):
       self.dbpass = parser.get('db', 'dbpass')
-    if parser.has_option('db', 'dbsock'):
+    if options.dbsock:
+      self.dbsock = options.dbsock
+    elif parser.has_option('db', 'dbsock'):
       self.dbsock = parser.get('db', 'dbsock')
-    if parser.has_option('db', 'dbuser'):
+    if options.dbuser:
+      self.dbuser = options.dbuser
+    elif parser.has_option('db', 'dbuser'):
       self.dbuser = parser.get('db', 'dbuser')
-    if parser.has_option('db', 'log'):
+    if options.log:
+      self.logpath = options.log
+    elif parser.has_option('db', 'log'):
       self.logpath = parser.get('db', 'log')
-    if parser.has_option('db', 'port'):
+    if options.port != None:
+      self.port = options.port
+    elif parser.has_option('db', 'port'):
       self.port = parser.getint('db', 'port')
 
     # Open the DB connection
@@ -212,11 +235,12 @@ class usetraxdb:
     self.lock = Lock()
 
   def run(self):
-
-    # wait for connections, spawn a thread for each
+    """
+    utdb daemon body.  Wait for connections, spawn a thread for each.
+    """
     while 1:
       try:
-        (client_socket, clientAddress) = self.server.accept()
+        (client_socket, client_address) = self.server.accept()
         child = ClientHandler(self)
         child.set_client_socket(client_socket)
         child.start()
@@ -228,8 +252,8 @@ class usetraxdb:
   def get_attr(self, server, client, timestamp, attr):
     """
     Returns a list of server/client/attribute/timestamp/value tuples for
-    a specified specified server/client/attribute stored most recently before a
-    specified timestamp.
+    a specified specified server/client/attribute stored most recently
+    before a specified timestamp.
     """
     self.log(
       "get_attr('%s', '%s', '%s', '%s')" % (server, client, timestamp, attr)
@@ -242,28 +266,11 @@ class usetraxdb:
       results["%s-%s-%s" % (value[0], value[1], value[2])] = value
     return result.values()
 
-  def get_clients(self, server, range):
-    """
-    """
-    self.log("get_clients('%s', '%s')" % (server, range))
-    (earliest, latest) = self.parse_range(range)
-    where = "timestamp >= %d AND timestamp <= %d" % self.parse_range(range)
-    where += " AND server = '%s'" % server
-    sql = """SELECT DISTINCT client FROM attributes
-             WHERE %s""" % where
-    self.log(sql)
-    self.lock.acquire()
-    cursor = self.db.cursor()
-    cursor.execute(sql)
-    result = [item for sublist in cursor.fetchall() for item in sublist]
-    self.lock.release()
-    return result
-
   def get_hist(self, server, client, range, attr):
     """
     Returns a list of server/client/attribute/timestamp/value tuples for a
-    specified server/client/attribute stored in the database over a specified
-    timestamp range.
+    specified server/client/attribute stored in the database over a
+    specified timestamp range.
     """
     self.log(
       "get_hist('%s', '%s', '%s', '%s')" % (server, client, range, attr)
@@ -275,10 +282,10 @@ class usetraxdb:
       where += " AND client = '%s'" % client
     if server != '*':
       where += " AND server = '%s'" % server
-    sql = """SELECT server, client, attr, timeStamp, value
+    sql = """SELECT server, client, attr, time_stamp, value
              FROM attributes
              WHERE %s
-             ORDER BY server, client, attr, timeStamp""" % where
+             ORDER BY server, client, attr, time_stamp""" % where
     self.log(sql)
     self.lock.acquire()
     cursor = self.db.cursor()
@@ -290,8 +297,8 @@ class usetraxdb:
   def get_sum(self, server, client, range, attr):
     """
     Returns a list of server/client/attribute/sum tuples for a specified
-    server/client/attribute stored in the database over a specified timestamp
-    range.
+    server/client/attribute stored in the database over a specified
+    timestamp range.
     """
     self.log(
       "get_sum('%s', '%s', '%s', '%s')" % (server, client, range, attr)
@@ -374,13 +381,13 @@ class usetraxdb:
       latest = int(latest)
     return (earliest, latest)
 
-utdb = usetraxdb()
+usetrax = utdb()
 context = daemon.DaemonContext()
-context.files_preserve = [utdb.server]
+context.files_preserve = [usetrax.db, usetrax.server]
 # python 2.4 version
 context.open()
 try:
-  utdb.run()
+  usetrax.run()
 finally:
   context.close()
 # python 2.5+ version
