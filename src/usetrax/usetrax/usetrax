@@ -119,7 +119,7 @@ class usetrax:
     if options.step:
       self.step = int(options.step)
     elif parser.has_option('usetrax', 'step'):
-      self.step = parser.get_int('usetrax', 'step')
+      self.step = parser.getint('usetrax', 'step')
     if options.sum:
       self.sum_by = options.sum
     elif parser.has_option('usetrax', 'sum'):

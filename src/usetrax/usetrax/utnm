@@ -2,6 +2,7 @@
 
 from ConfigParser import SafeConfigParser
 import commands
+import daemon
 from optparse import OptionParser
 from os.path import expanduser
 import re
@@ -93,6 +94,7 @@ class utnm:
     parser.add_option('--iface', type='string')
     parser.add_option('--ifconfig', type='string')
     parser.add_option('--localaddr', type='string')
+    parser.add_option('--log', type='string')
     parser.add_option('--packets', type='int')
     parser.add_option('--pause', type='int')
     parser.add_option('--promiscuous', type='string')
@@ -128,43 +130,43 @@ class utnm:
     if options.iface:
       self.iface = options.iface
     elif parser.has_option('utnm', 'iface'):
-      self.iface = parser.get_option('utnm', 'iface')
+      self.iface = parser.get('utnm', 'iface')
     if options.ifconfig:
       self.ifconfig = options.ifconfig
     elif parser.has_option('utnm', 'ifconfig'):
-      self.ifconfig = parser.get_option('utnm', 'ifconfig')
+      self.ifconfig = parser.get('utnm', 'ifconfig')
     if options.localaddr:
       self.localaddr = options.localaddr
     elif parser.has_option('utnm', 'localaddr'):
-      self.localadd = parser.get_option('utnm', 'localaddr')
+      self.localadd = parser.get('utnm', 'localaddr')
     if options.log:
       self.logpath = options.log
     elif parser.has_option('utnm', 'log'):
-      self.logpath = parser.get_option('utnm', 'log')
+      self.logpath = parser.get('utnm', 'log')
     if options.packets:
       self.packets = options.packets
     elif parser.has_option('utnm', 'packets'):
-      self.packets = parser.get_int('utnm', 'packets')
+      self.packets = parser.getint('utnm', 'packets')
     if options.pause != None:
       self.pause = options.pause
     elif parser.has_option('utnm', 'pause'):
-      self.pause = parser.get_int('utnm', 'pause')
+      self.pause = parser.getint('utnm', 'pause')
     if options.promiscuous:
       self.promiscuous = options.promiscuous == 'y'
     elif parser.has_option('utnm', 'promiscuous'):
-      self.promiscuous = parser.get_option('utnm', 'promiscuous') == 'y'
+      self.promiscuous = parser.get('utnm', 'promiscuous') == 'y'
     if options.run:
       self.run = options.run
     elif parser.has_option('utnm', 'run'):
-      self.run = parser.get_option('utnm', 'run')
+      self.run = parser.get('utnm', 'run')
     if options.server:
       self.server = options.server
     elif parser.has_option('utnm', 'server'):
-      self.run = parser.get_option('utnm', 'server')
+      self.server = parser.get('utnm', 'server')
     if options.tcpdump:
       self.tcpdump = options.tcpdump
     elif parser.has_option('utnm', 'tcpdump'):
-      self.run = parser.get_option('utnm', 'tcpdump')
+      self.tcpdump = parser.get('utnm', 'tcpdump')
 
     output = commands.getoutput(self.ifconfig + ' ' + self.iface)
     match_info = re.search('inet (addr:)?([\.0-9]+)', output)
@@ -212,59 +214,82 @@ class utnm:
     # Only care about push packets
     tcpdump_words.append('tcp[13] & 8 == 8')
 
-    while True:
+  def run(self):
+    """
+    utnm daemon body.  Wake periodically to run tcpdump and report
+    traffic to the utdb daemon.
+    """
 
-      start_time = int(time.time())
-      if self.end_time and start_time >= self.end_time:
-        break
+    try:
 
-      # Collect stdout from a tcpdump process that monitors push packets
-      print ' '.join(tcpdump_words)
-      tcpdump = subprocess.Popen(tcpdump_words,stdout=subprocess.PIPE,bufsize=0)
+      while True:
 
-      for line in tcpdump.stdout:
-        unused_lines = 0
-        # Sample tcpdump output:
-        # 11:49:35.379446 IP 198.202.118.30.1023 > 172.25.33.246.988: P 2842811501:2842811789(288) ack 280752543 win 126
-        (ts, prot, src, arrow, dst, flags, size, tail)=re.split('\s+', line, 7)
-        # Parse the packet size and source and destination ips.  TODO: the
-        # ports stripped from the source and destination might be used to
-        # differentiate multiple clients on a single machine.
-        match_info = re.search('\((\d+)\)', size)
-        if not match_info:
-          unused_lines += 1
-          continue
-        size = int(match_info.group(1))
-        match_info = re.match('^(.*)\.(\d+)$', src)
-        (src_addr, src_port) = (match_info.group(1), match_info.group(2))
-        match_info = re.match('^(.*)\.(\d+):$', dst)
-        (dst_addr, dst_port) = (match_info.group(1), match_info.group(2))
-        # Match src against local addr to determine if this is a read or write
-        if re.match(self.localaddr, src_addr):
-          action = 'read'
-          client = dst_addr
-        else:
-          action = 'write'
-          client = src_addr
-        # Update client's traffic record
-        if not self.client_traffic.has_key(client):
-          self.client_traffic[client] = {
-            'readBytes': 0,
-            'readMessages': 0,
-            'writeBytes': 0,
-            'writeMessages': 0
-          }
-        self.client_traffic[client][action + 'Bytes'] += size
-        self.client_traffic[client][action + 'Messages'] += 1
-        # If traffic is sparse, periodically report to the usetrax daemon and
-        # flush so that we're not summarizing over too long a period
-        if int(time.time()) - start_time >= 5:
-          self.report_traffic()
-          start_time = int(time.time())
+        start_time = int(time.time())
+        if self.end_time and start_time >= self.end_time:
+          break
 
-      self.report_traffic()
-      if self.pause > 0:
-        time.sleep(self.pause)
+        # Collect stdout from a tcpdump process that monitors push packets
+        self.log("Starting tcpdump parsing at %s" % start_time);
+        tcpdump = subprocess.Popen(
+          tcpdump_words, stdout=subprocess.PIPE, bufsize=0
+        )
+
+        for line in tcpdump.stdout:
+          unused_lines = 0
+          # Sample tcpdump output:
+          # 11:49:35.379446 IP 198.202.118.30.1023 > 172.25.33.246.988: P 2842811501:2842811789(288) ack 280752543 win 126
+          (ts,prot,src,arrow,dst,flags,size,tail)=re.split('\s+', line, 7)
+          # Parse the packet size and source and destination ips.  TODO: the
+          # ports stripped from the source and destination might be used to
+          # differentiate multiple clients on a single machine.
+          match_info = re.search('\((\d+)\)', size)
+          if not match_info:
+            unused_lines += 1
+            continue
+          size = int(match_info.group(1))
+          match_info = re.match('^(.*)\.(\d+)$', src)
+          (src_addr, src_port) = (match_info.group(1), match_info.group(2))
+          match_info = re.match('^(.*)\.(\d+):$', dst)
+          (dst_addr, dst_port) = (match_info.group(1), match_info.group(2))
+          # Match src against local addr to determine if this is a read or write
+          if re.match(self.localaddr, src_addr):
+            action = 'read'
+            client = dst_addr
+          else:
+            action = 'write'
+            client = src_addr
+          # Update client's traffic record
+          if not self.client_traffic.has_key(client):
+            self.client_traffic[client] = {
+              'readBytes': 0,
+              'readMessages': 0,
+              'writeBytes': 0,
+              'writeMessages': 0
+            }
+          self.client_traffic[client][action + 'Bytes'] += size
+          self.client_traffic[client][action + 'Messages'] += 1
+          # If traffic is sparse, periodically report to the usetrax daemon
+          # and flush so that we're not summarizing over too long a period
+          if int(time.time()) - start_time >= 5:
+            self.report_traffic()
+            start_time = int(time.time())
+
+        self.report_traffic()
+        if self.pause > 0:
+          time.sleep(self.pause)
+
+    except Exception, x:
+
+      self.log('%s' % x)
+
+  def log(self, message):
+    """
+    A convenience method for writing a message to the log file.
+    """
+    logfile = open(self.logpath, 'a+')
+    logfile.write(message + "\n")
+    logfile.close()
+
 
   def report_traffic(self):
     """
@@ -277,13 +302,11 @@ class utnm:
       ct = self.client_traffic[client]
       for attr in ct.keys():
         message = "SET %s %s %s %s %s\n" % (server, client, now, attr, ct[attr])
+        self.log(message)
         if self.server_socket:
           self.server_socket.send(message)
           # Receive and discard ack
           self.server_socket.recv(256)
-        else:
-          print message
-          sys.stdout.flush()
     self.client_traffic = { }
 
 monitor = utnm()
