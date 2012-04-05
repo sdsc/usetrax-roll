@@ -121,7 +121,7 @@ class utnm:
     self.packets = 10000
     self.pause = 5
     self.promiscuous = False
-    self.run = None
+    self.runlength = None
     self.server = None
     self.tcpdump = '/usr/sbin/tcpdump'
 
@@ -156,9 +156,9 @@ class utnm:
     elif parser.has_option('utnm', 'promiscuous'):
       self.promiscuous = parser.get('utnm', 'promiscuous') == 'y'
     if options.run:
-      self.run = options.run
+      self.runlength = options.run
     elif parser.has_option('utnm', 'run'):
-      self.run = parser.get('utnm', 'run')
+      self.runlength = parser.get('utnm', 'run')
     if options.server:
       self.server = options.server
     elif parser.has_option('utnm', 'server'):
@@ -176,9 +176,9 @@ class utnm:
     if not self.localaddr:
       self.localaddr = match_info.group(2)
     self.end_time = None
-    if self.run:
+    if self.runlength:
       self.end_time = int(time.time())
-      match_info = re.match('^(\d+)([sSmMhHdD])?$', self.run)
+      match_info = re.match('^(\d+)([sSmMhHdD])?$', self.runlength)
       if not match_info:
         help(self.__class__)
         sys.exit(1)
@@ -205,6 +205,25 @@ class utnm:
         (addr, port) = self.server.split(':', 1)
       self.server_socket.connect((addr, int(port)))
 
+    self.log("Monitor configuration:")
+    self.log("config: %s" % self.config)
+    self.log("iface: %s" % self.iface)
+    self.log("ifconfig: %s" % self.ifconfig)
+    self.log("localaddr: %s" % self.localaddr)
+    self.log("logpath: %s" % self.logpath)
+    self.log("packets: %s" % self.packets)
+    self.log("pause: %s" % self.pause)
+    self.log("promiscuous: %s" % self.promiscuous)
+    self.log("run: %s" % self.runlength)
+    self.log("server: %s" % self.server)
+    self.log("tcpdump: %s" % self.tcpdump)
+
+  def run(self):
+    """
+    utnm daemon body.  Wake periodically to run tcpdump and report
+    traffic to the utdb daemon.
+    """
+
     self.client_traffic = { }
     tcpdump_words = [
       self.tcpdump, '-c', str(self.packets), '-i', self.iface, '-nn'
@@ -213,12 +232,6 @@ class utnm:
       tcpdump_words.append('-p')
     # Only care about push packets
     tcpdump_words.append('tcp[13] & 8 == 8')
-
-  def run(self):
-    """
-    utnm daemon body.  Wake periodically to run tcpdump and report
-    traffic to the utdb daemon.
-    """
 
     try:
 
