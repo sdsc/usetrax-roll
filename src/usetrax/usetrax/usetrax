@@ -11,7 +11,8 @@ import time
 
 class usetrax:
   """
-  usetrax - show resource usage info collected by the usetrax daemon
+  usetrax - show resource usage info collected by the usetrax data base
+            daemon (utdb)
 
   usetrax [-h -v] [--config=path] [--end=time] [--resource=str]
           [--server=str] [--start=time] [--step=int] [--sum=str]
@@ -152,12 +153,13 @@ class usetrax:
       if reply.startswith('OK ['):
         for item in reply[4:len(reply) - 1].split(']['):
           (server,ip,attr,timestamp,value) = item.split(',')
+          timestamp = int(timestamp)
           if host_ips.has_key(ip):
             # Sum-by value mapped to hostname; switch to IP
             ip = host_ips.get(ip)
           if not ip_sum_by.has_key(ip):
             ip_sum_by[ip] = []
-          ip_sum_by[ip].append((int(timestamp), "%s=%s" % (self.sum_by, value)))
+          ip_sum_by[ip].append((timestamp, "%s=%s" % (self.sum_by, value)))
 
     # foreach time step ...
     if not self.step:
@@ -165,19 +167,19 @@ class usetrax:
     for timestep in range(self.start, self.end, self.step):
       end_step = timestep + self.step - 1
       usage_this_step = { }
-      self.send("SUM %s * %s-%s *" % (self.resource, self.start, end_step))
+      self.send("HISTORY %s * %s-%s *" % (self.resource, self.start, end_step))
       reply = self.recv()
-      # SUM reply format "OK [server,ip,attr,sum]..."
       if reply.startswith('OK ['):
-        # foreach server/ip/attr/sum tuple from this time step ...
+        # foreach server/ip/attr/timestamp/value tuple from this time step ...
         for value in reply[4:len(reply) - 1].split(']['):
-          (server, ip, attr, sum) = value.split(',')
+          (server, ip, attr, timestamp, value) = value.split(',')
+          timestamp = int(timestamp)
           # Determine "user".  If we're summing job/user and we have a summary
           # attribute for this IP, use that; otherwise, if we have a host name
           # for the IP, use that; otherwise, IP
-          if ip_sum_by.has_key(ip) and timestep >= ip_sum_by[ip][0][0]:
+          if ip_sum_by.has_key(ip) and timestamp >= ip_sum_by[ip][0][0]:
             # Pop older values of ip_sum_by for this IP
-            while len(ip_sum_by[ip]) > 1 and timestep >= ip_sum_by[ip][1][0]:
+            while len(ip_sum_by[ip]) > 1 and timestamp >= ip_sum_by[ip][1][0]:
               ip_sum_by[ip].pop(0)
             user = ip_sum_by[ip][0][1]
           elif ip_hosts.has_key(ip):
@@ -189,13 +191,13 @@ class usetrax:
             usage_this_step[user] = { }
           if not usage_this_step[user].has_key(attr):
             usage_this_step[user][attr] = 0
-          usage_this_step[user][attr] += int(float(sum))
+          usage_this_step[user][attr] += int(float(value))
           # Compute 'total' values that sum per-user reads and writes
           if attr.startswith('read') or attr.startswith('write'):
             totalattr = attr.replace('read', 'total').replace('write', 'total')
             if not usage_this_step[user].has_key(totalattr):
               usage_this_step[user][totalattr] = 0
-            usage_this_step[user][totalattr] += int(float(sum))
+            usage_this_step[user][totalattr] += int(float(value))
 
       for user in sorted(usage_this_step.keys()):
         display = "%s %s " % (timestep, user)
