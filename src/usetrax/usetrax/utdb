@@ -49,6 +49,13 @@ class ClientHandler(Thread):
           for value in self.parent.get_attr(server, client, timestamp, attr):
             reply += "[%s,%s,%s,%s,%s]" % value
           self.send(reply)
+        elif command == 'GETRES':
+          reply = 'OK '
+          sep = ''
+          for value in self.parent.get_resources():
+            reply += sep + value[0]
+            sep = ','
+          self.send(reply)
         elif command == 'HISTORY':
           (server, client, range, attr) = re.split("\s+", remainder, 3)
           reply = 'OK '
@@ -194,37 +201,38 @@ class utdb:
     parser.read(self.config)
     if options.dbname:
       self.dbname = options.dbname
-    elif parser.has_option('db', 'dbname'):
-      self.dbname = parser.get('db', 'dbname')
+    elif parser.has_option('utdb', 'dbname'):
+      self.dbname = parser.get('utdb', 'dbname')
     if options.dbpass:
       self.dbpass = options.dbpass
-    elif parser.has_option('db', 'dbpass'):
-      self.dbpass = parser.get('db', 'dbpass')
+    elif parser.has_option('utdb', 'dbpass'):
+      self.dbpass = parser.get('utdb', 'dbpass')
     if options.dbsock:
       self.dbsock = options.dbsock
-    elif parser.has_option('db', 'dbsock'):
-      self.dbsock = parser.get('db', 'dbsock')
+    elif parser.has_option('utdb', 'dbsock'):
+      self.dbsock = parser.get('utdb', 'dbsock')
     if options.dbuser:
       self.dbuser = options.dbuser
-    elif parser.has_option('db', 'dbuser'):
-      self.dbuser = parser.get('db', 'dbuser')
+    elif parser.has_option('utdb', 'dbuser'):
+      self.dbuser = parser.get('utdb', 'dbuser')
     if options.log:
       self.logpath = options.log
-    elif parser.has_option('db', 'log'):
-      self.logpath = parser.get('db', 'log')
+    elif parser.has_option('utdb', 'log'):
+      self.logpath = parser.get('utdb', 'log')
     if options.port != None:
       self.port = options.port
-    elif parser.has_option('db', 'port'):
-      self.port = parser.getint('db', 'port')
+    elif parser.has_option('utdb', 'port'):
+      self.port = parser.getint('utdb', 'port')
 
-    # Open the DB connection
-    self.db = MySQLdb.connect(
+    # Test the DB connection
+    db = MySQLdb.connect(
       host = 'localhost',
       user = self.dbuser,
       passwd = self.dbpass,
       db = self.dbname,
       unix_socket = self.dbsock
     )
+    db.close()
 
     # Open the listening socket
     self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -246,7 +254,6 @@ class utdb:
         child.start()
       except:
         break
-    self.db.close()
     self.server.close()
 
   def get_attr(self, server, client, timestamp, attr):
@@ -282,17 +289,19 @@ class utdb:
       where += " AND client = '%s'" % client
     if server != '*':
       where += " AND server = '%s'" % server
-    sql = """SELECT server, client, attr, time_stamp, value
+    sql = """SELECT server, client, attr, timestamp, value
              FROM attributes
              WHERE %s
-             ORDER BY server, client, attr, time_stamp""" % where
-    self.log(sql)
-    self.lock.acquire()
-    cursor = self.db.cursor()
-    cursor.execute(sql)
-    result = cursor.fetchall()
-    self.lock.release()
-    return result
+             ORDER BY server, client, attr, timestamp""" % where
+    return self.execute_sql(sql, True)
+
+  def get_resources(self):
+    """
+    Returns a list of server tuples stored in the database.
+    """
+    self.log("get_resources()")
+    sql = "SELECT DISTINCT server FROM attributes ORDER BY server"
+    return self.execute_sql(sql, True)
 
   def get_sum(self, server, client, range, attr):
     """
@@ -315,13 +324,7 @@ class utdb:
              WHERE %s
              GROUP BY server, client, attr
              ORDER BY server, client, attr""" % where
-    self.log(sql)
-    self.lock.acquire()
-    cursor = self.db.cursor()
-    cursor.execute(sql)
-    result = cursor.fetchall()
-    self.lock.release()
-    return result
+    return self.execute_sql(sql, True)
 
   def set_attr(self, server, client, timestamp, attr, value):
     """
@@ -333,11 +336,30 @@ class utdb:
     sql = """INSERT INTO attributes(server, client, timestamp, attr, value)
              VALUES ('%s', '%s', %d, '%s', '%s')""" % \
              (server, client, int(timestamp), attr, value)
+    self.execute_sql(sql, False)
+
+  def execute_sql(self, sql, do_fetch):
+    """
+    Sends a specified SQL command to the DB server.  If requested, fetches
+    and returns the result.
+    """
+    result = None
     self.log(sql)
     self.lock.acquire()
-    cursor = self.db.cursor()
+    db = MySQLdb.connect(
+      host = 'localhost',
+      user = self.dbuser,
+      passwd = self.dbpass,
+      db = self.dbname,
+      unix_socket = self.dbsock
+    )
+    cursor = db.cursor()
     cursor.execute(sql)
+    if do_fetch:
+      result = cursor.fetchall()
+    db.close()
     self.lock.release()
+    return result
 
   def log(self, message):
     """
@@ -383,7 +405,7 @@ class utdb:
 
 usetrax = utdb()
 context = daemon.DaemonContext()
-context.files_preserve = [usetrax.db, usetrax.server]
+context.files_preserve = [usetrax.server]
 # python 2.4 version
 context.open()
 try:
