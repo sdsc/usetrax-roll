@@ -196,14 +196,14 @@ class utnm:
       else:
         self.end_time += bump * 60 * 60 * 24
 
-    # Open a connection to the usetrax daemon
-    self.server_socket = None
     if self.server:
-      self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-      (addr, port) = (self.server, 7734)
-      if self.server.find(':') >= 0:
-        (addr, port) = self.server.split(':', 1)
-      self.server_socket.connect((addr, int(port)))
+      if self.server.find(':') < 0:
+        self.server += ':7734'
+      # Test connecting to the utdb
+      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      (addr, port) = self.server.split(':', 1)
+      sock.connect((addr, int(port)))
+      sock.close()
 
     self.log("Monitor configuration:")
     self.log("config: %s" % self.config)
@@ -309,22 +309,34 @@ class utnm:
     Reports traffic information collected so far to the usetrax daemon,
     then reinitializes the information collection.
     """
-    server = commands.getoutput('/bin/hostname');
+    resource = commands.getoutput('/bin/hostname');
     now = int(time.time())
+    sock = None
+    if self.server:
+      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      (addr, port) = self.server.split(':', 1)
+      try:
+        sock.connect((addr, int(port)))
+      except Exception, x:
+        self.log('%s' % x)
     for client in self.client_traffic.keys():
       ct = self.client_traffic[client]
       for attr in ct.keys():
-        message = "SET %s %s %s %s %s\n" % (server, client, now, attr, ct[attr])
+        message = "SET %s %s %s %s %s" % (resource, client, now, attr, ct[attr])
         self.log(message)
-        if self.server_socket:
-          self.server_socket.send(message)
-          # Receive and discard ack
-          self.server_socket.recv(256)
+        if sock:
+          try:
+            sock.send(message + "\n")
+            # Receive and discard ack
+            sock.recv(256)
+          except Exception, x:
+            self.log('%s' % x)
+    if sock:
+      sock.close()
     self.client_traffic = { }
 
 monitor = utnm()
 context = daemon.DaemonContext()
-context.files_preserve = [monitor.server_socket]
 # python 2.4 version
 context.open()
 try:

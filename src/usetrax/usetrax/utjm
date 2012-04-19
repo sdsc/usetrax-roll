@@ -106,14 +106,14 @@ class utjm:
     elif parser.has_option('utjm', 'server'):
       self.server = parser.get('utjm', 'server')
 
-    # If appropriate, open a connection to the usetrax daemon
-    self.server_socket = None
     if self.server:
-      self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-      (addr, port) = (self.server, 7734)
-      if self.server.find(':') >= 0:
-        (addr, port) = self.server.split(':', 1)
-      self.server_socket.connect((addr, int(port)))
+      if self.server.find(':') < 0:
+        self.server += ':7734'
+      # Test connecting to the utdb
+      sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      (addr, port) = self.server.split(':', 1)
+      sock.connect((addr, int(port)))
+      sock.close()
 
   def log(self, message):
     """
@@ -122,16 +122,6 @@ class utjm:
     logfile = open(self.logpath, 'a+')
     logfile.write(message + "\n")
     logfile.close()
-
-  def report(self, message):
-    """
-    A convenience method for sending a message to the utdb daemon.
-    """
-    self.log(message)
-    if self.server_socket:
-      self.server_socket.send(message + "\n")
-      # Receive and discard ack
-      self.server_socket.recv(256)
 
   def run(self):
     """
@@ -142,51 +132,68 @@ class utjm:
     host_jobs_reported = { }
     host_users_reported = { }
 
-    try:
+    while True:
 
-      while True:
+      now = int(time.time())
+      sock = None
+      if self.server:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        (addr, port) = self.server.split(':', 1)
+        try:
+          sock.connect((addr, int(port)))
+        except Exception, x:
+          self.log('%s' % x)
 
-        now = int(time.time())
+      for line in commands.getoutput('qstat -n1').split("\n"):
 
-        for line in commands.getoutput('qstat -n1').split("\n"):
+        pieces = re.split('\s+', line)
 
-          pieces = re.split('\s+', line)
+        if len(pieces) < 10 or pieces[9] != 'R':
+          # Not a running job
+          continue
+        match_info = re.search('^(\d+)', pieces[0])
+        if not match_info:
+          self.log("Bad qstat line format '%s'" % line)
+          continue
 
-          if len(pieces) < 10 or pieces[9] != 'R':
-            # Not a running job
-            continue
-          match_info = re.search('^(\d+)', pieces[0])
-          if not match_info:
-            self.log("Bad qstat line format '%s'" % line)
-            continue
+        job = "%s-%s" % (match_info.group(1), self.resource)
+        hosts = pieces[-1]
+        user = pieces[1]
 
-          job = "%s-%s" % (match_info.group(1), self.resource)
-          hosts = pieces[-1]
-          user = pieces[1]
-
-          for host in re.split('\+', hosts):
-            host = host.split('/', 1)[0]
-            if not host_jobs_reported.has_key(host) or \
-               host_jobs_reported[host] != job:
-              message = "SET %s %s %s job %s" % (self.resource, host, now, job)
-              self.report(message)
-              host_jobs_reported[host] = job
-            if not host_users_reported.has_key(host) or \
-               host_users_reported[host] != user:
-              message = "SET %s %s %s user %s" % \
-                        (self.resource, host, now, user)
-              self.report(message)
-              host_users_reported[host] = user
-
-        time.sleep(self.pause)
-
-    except Exception, x:
-
-      self.log('%s' % x)
+        for host in re.split('\+', hosts):
+          host = host.split('/', 1)[0]
+          if not host_jobs_reported.has_key(host) or \
+             host_jobs_reported[host] != job:
+            message = "SET %s %s %s job %s" % (self.resource, host, now, job)
+            self.log(message)
+            if sock:
+              try:
+                sock.send(message + "\n")
+                # Receive and discard ack
+                sock.recv(256)
+              except Exception, x:
+                self.log('%s' % x)
+            host_jobs_reported[host] = job
+          if not host_users_reported.has_key(host) or \
+             host_users_reported[host] != user:
+            message = "SET %s %s %s user %s" % \
+                      (self.resource, host, now, user)
+            self.log(message)
+            if sock:
+              try:
+                sock.send(message + "\n")
+                # Receive and discard ack
+                sock.recv(256)
+              except Exception, x:
+                self.log('%s' % x)
+            host_users_reported[host] = user
+      
+      if sock:
+        sock.close()
+      time.sleep(self.pause)
 
 monitor = utjm()
 context = daemon.DaemonContext()
-context.files_preserve = [monitor.server_socket]
 # python 2.4 version
 context.open()
 try:
