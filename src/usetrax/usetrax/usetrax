@@ -167,7 +167,7 @@ class usetrax:
     for timestep in range(self.start, self.end, self.step):
       end_step = timestep + self.step - 1
       usage_this_step = { }
-      self.send("HISTORY %s * %s-%s *" % (self.resource, self.start, end_step))
+      self.send("HISTORY %s * %s-%s *" % (self.resource, timestep, end_step))
       reply = self.recv()
       if reply.startswith('OK ['):
         # foreach server/ip/attr/timestamp/value tuple from this time step ...
