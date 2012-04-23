@@ -15,7 +15,7 @@ class usetrax:
             daemon (utdb)
 
   usetrax [-h -v] [--config=path] [--end=time] [--resource=str]
-          [--server=str] [--start=time] [--step=int] [--sum=str]
+          [--server=str] [--start=time] [--step=duration] [--sum=str]
 
   Options:
 
@@ -28,9 +28,9 @@ class usetrax:
     --config=path
       Path to usetrax config file.  Defaults to ~/.usetrax.
 
-    Other command-line options correspond to the configuration file
-    options listed below.  If an option appears both on the command line
-    and in the config file, the command line value takes precedence.
+    Other command-line options correspond to the configuration file options
+    listed below.  If an option appears both on the command line and in the
+    config file, the command line value takes precedence.
 
   Configuration options for usetrax are in section [usetrax].
   Config file options:
@@ -38,9 +38,9 @@ class usetrax:
     end: time
       The end of the time range to display; defaults to the current time.
       The time specification may be given as an integer (seconds since epoch),
-      a string of the format "-nn[smhd]" (number of seconds/minutes/hours/days
-      before the current time, defaults to minutes), or a date/time string of
-      the format "YYYY-MM-DD:HH:MM[:SS]".
+      a duration of the format "-[[DD:][HH:]MM:]SS]" (days, hours, minutes,
+      seconds before the current time), or a date/time string of the format
+      "YYYY-MM-DD:HH:MM[:SS]".
 
     resource: str
       The name of the resource to report.  Defaults to '*'.
@@ -52,9 +52,9 @@ class usetrax:
       The beginning of the time range to display; defaults to 0.  See --end
       for time format.
 
-    step: int
-      Summarize usage information every int seconds throughout the start/end
-      range.  Summarizes the entire range by default.
+    step: duration
+      Sum usage information at fixed intervals throughout the start/end range,
+      format [[[DD:]HH:]MM:]SS.  Sums the entire range by default.
 
     sum: str
       Sum usage information by a resource attribute.  Curently supports
@@ -76,7 +76,7 @@ class usetrax:
     parser.add_option('--resource', type='string')
     parser.add_option('--server', type='string')
     parser.add_option('--start', type='string')
-    parser.add_option('--step', type='int')
+    parser.add_option('--step', type='string')
     parser.add_option('--sum', type='string')
 
     (options, args) = parser.parse_args()
@@ -118,9 +118,9 @@ class usetrax:
     elif parser.has_option('usetrax', 'start'):
       self.start = self.parse_time(parser.get('usetrax', 'start'))
     if options.step:
-      self.step = int(options.step)
+      self.step = self.parse_duration(options.step)
     elif parser.has_option('usetrax', 'step'):
-      self.step = parser.getint('usetrax', 'step')
+      self.step = self.parse_duration(parser.get('usetrax', 'step'))
     if options.sum:
       self.sum_by = options.sum
     elif parser.has_option('usetrax', 'sum'):
@@ -164,10 +164,10 @@ class usetrax:
     # foreach time step ...
     if not self.step:
       self.step = self.end - self.start + 1
-    for timestep in range(self.start, self.end, self.step):
-      end_step = timestep + self.step - 1
+    for begin_step in range(self.start, self.end, self.step):
+      end_step = begin_step + self.step - 1
       usage_this_step = { }
-      self.send("HISTORY %s * %s-%s *" % (self.resource, timestep, end_step))
+      self.send("HISTORY %s * %s-%s *" % (self.resource, begin_step, end_step))
       reply = self.recv()
       if reply.startswith('OK ['):
         # foreach server/ip/attr/timestamp/value tuple from this time step ...
@@ -200,34 +200,37 @@ class usetrax:
             usage_this_step[user][totalattr] += int(float(value))
 
       for user in sorted(usage_this_step.keys()):
-        display = "%s %s " % (timestep, user)
+        display = "%s %s " % (self.strduration(begin_step - self.start), user)
         for attr in sorted(usage_this_step[user].keys()):
           display += ' %s %s' % (attr, usage_this_step[user][attr])
         print display
         sys.stdout.flush()
 
+  def parse_duration(self, s):
+    """
+    Parses a duration given with the --step option.  Returns the equivalent
+    number of seconds.
+    """
+    match_info = re.match('^((((\d+):)?(\d+):)?(\d+):)?(\d+)$', s)
+    result = int(match_info.group(7))
+    if match_info.group(6) != None:
+      result += int(match_info.group(6)) * 60
+      if match_info.group(5) != None:
+        result += int(match_info.group(5)) * 60 * 60
+        if match_info.group(4) != None:
+          result += int(match_info.group(4)) * 24 * 60 * 60
+    return result
+
   def parse_time(self, s):
     """
-    Parses the time specification given with the --start and --end command-line
-    options.  Returns the specified time in seconds since the epoch.
+    Parses the time specification given with the --start and --end options.
+    Returns the specified time in seconds since the epoch.
     """
     result = int(time.time())
     if re.match('^\d+$', s):
       result = int(s)
-    elif re.match('^-\d+[dDhHmMsS]?$', s):
-      match_info = re.match('^-(\d+)([dDhHmMsS]?)$', s)
-      bump = int(match_info.group(1))
-      ch = 'm'
-      if match_info.group(2):
-        ch = match_info.group(2).lower()
-      if ch == 'd':
-        result -= bump * 24 * 60 * 60
-      elif ch == 'h':
-        result -= bump * 60 * 60
-      elif ch == 's':
-        result -= bump
-      else:
-        result -= bump * 60
+    elif re.match('^-[\d:]+$', s):
+      result -= self.parse_duration(s[1:])
     elif re.match('^\d\d\d\d-\d\d-\d\d:\d\d', s):
       match_info = re.match('^(\d+)-(\d+)-(\d+):(\d+)(:(\d+))?', s)
       minute = 0
@@ -267,5 +270,23 @@ class usetrax:
     A convenience method for sending a message to the usetrax daemon.
     """
     self.server_socket.send(message + "\n")
+
+  def strduration(self, d):
+    """
+    Converts a number of seconds into a duration string.
+    """
+    result = ''
+    if d >= 24 * 60 * 60:
+      result += '%02d:' % int(d / (24 * 60 * 60))
+      d %= 24 * 60 * 60
+    if d >= 60 * 60:
+      result += '%02d:' % int(d / (60 * 60))
+      d %= 60 * 60
+    if d >= 60:
+      result += '%02d:' % int(d / 60)
+      d %= 60
+    result += '%02d' % d
+    result = re.sub('^0', '', result)
+    return result
 
 usetrax()
