@@ -4,11 +4,9 @@ import cgi
 import cgitb
 cgitb.enable()
 import commands
-import os
 import random
 import socket
 import sys
-import time
 
 def recv(sock):
   """
@@ -46,12 +44,6 @@ head = """Content-type: text/html\n
   <h1>Usetrax Graph</h1>
   <form action="http://triton-44.sdsc.edu/~diag/cgi-bin/usetrax.cgi">
 """
-tail = """
-  </form>
-</body>
-</html>
-"""
-
 form = '''
 <table>
 <tr align="left"><th>Server</th><td><input type="text" name="server"/></td></tr>
@@ -68,16 +60,22 @@ form = '''
 <tr align="left"><th></th><td><input type="submit" value="Refresh"/></td></tr>
 </table><br/><br/>
 '''
-debug = ''
+tail = """
+  </form>
+</body>
+</html>
+"""
 
 if params.has_key('server'):
 
-  # Open a connection to the usetrax daemon
   server = params.getfirst('server')
   if server.find(':') < 0:
     server += ':7734'
-  (addr, port) = server.split(':', 1)
+  form = form.replace('name="server"', 'name="server" value="%s"' % server)
+
+  # Open a connection to the usetrax daemon
   sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  (addr, port) = server.split(':', 1)
   try:
     sock.connect((addr, int(port)))
   except Exception, x:
@@ -85,9 +83,6 @@ if params.has_key('server'):
     print "Connection to %s failed" % server
     print tail
     sys.exit(0)
-
-  form = form.replace('name="server"', 'name="server" value="%s"' % server)
-
   send(sock, 'GETRES')
   reply = recv(sock)
   sock.close()
@@ -99,10 +94,14 @@ if params.has_key('server'):
 
   if params.has_key('resource'):
 
-    end = '-0'
     resource = params.getfirst('resource')
+    form = form.replace(
+      'option>%s' % resource, 'option selected="1">%s' % resource
+    )
+
+    end = '-0'
     start = '0'
-    step = None
+    step = 0
     sumby = 'Host'
 
     if params.has_key('end'):
@@ -110,125 +109,118 @@ if params.has_key('server'):
     if params.has_key('start'):
       start = params.getfirst('start')
     if params.has_key('step'):
-      step = int(params.getfirst('step'))
+      step = params.getfirst('step')
     if params.has_key('sumby'):
       sumby = params.getfirst('sumby')
 
-    form = form.replace(
-      'option>%s' % resource, 'option selected="1">%s' % resource
-    )
     form = form.replace('name="start"/>', 'name="start" value="%s"/>' % start)
     form = form.replace('name="end"/>', 'name="end" value="%s"/>' % end)
     form = form.replace('name="step"/>', 'name="step" value="%s"/>' % step)
     form = form.replace('option>%s' % sumby, 'option selected="1">%s' % sumby)
 
     command = \
-      './usetrax --server=%s --resource=%s --start=%s --end=%s --sum=%s' % \
-      (server, resource, start, end, sumby)
-    if step:
-      command += ' --step=%s' % step
+      './usetrax --server=%s --resource=%s --start=%s --end=%s --sum=%s --step=%s' % \
+      (server, resource, start, end, sumby, step)
     form += '%s<br/>' % command
     output = commands.getoutput(command)
 
     colorsPerConsumer = { }
-    lastColor = colorsPerConsumer['Others'] = (
-      random.randrange(0,256), random.randrange(0,256), random.randrange(0,256)
+    colorsPerConsumer['Others'] = (
+      random.randrange(64, 256),
+      random.randrange(64, 256),
+      random.randrange(64, 256)
     )
-    totalsPerStep = { }
-    usagePerStepPerConsumer = { }
+    totalPerStepPerAttr = { }
+    usagePerStepPerAttrPerConsumer = { }
 
     for line in output.split("\n"):
 
       pieces = line.split()
       if len(pieces) < 2:
         continue
-      step = int(pieces[0])
+      step = pieces[0]
       consumer = pieces[1]
 
-      if not totalsPerStep.has_key(step):
-        totalsPerStep[step] = { }
-      if not usagePerStepPerConsumer.has_key(step):
-        usagePerStepPerConsumer[step] = { }
-      if not usagePerStepPerConsumer[step].has_key(consumer):
-        usagePerStepPerConsumer[step][consumer] = { }
+      if not totalPerStepPerAttr.has_key(step):
+        totalPerStepPerAttr[step] = { }
+      if not usagePerStepPerAttrPerConsumer.has_key(step):
+        usagePerStepPerAttrPerConsumer[step] = { }
       if not colorsPerConsumer.has_key(consumer):
-        lastColor = colorsPerConsumer[consumer] = (
-          random.randrange(0, 256),
-          random.randrange(0, 256),
-          random.randrange(0, 256)
+        colorsPerConsumer[consumer] = (
+          random.randrange(64, 256),
+          random.randrange(64, 256),
+          random.randrange(64, 256)
         )
 
-      usagePerAttr = { }
       for i in range(3, len(pieces), 2):
         attr = pieces[i - 1]
         usage = int(pieces[i])
-        usagePerAttr[attr] = usage
-        if not totalsPerStep[step].has_key(attr):
-          totalsPerStep[step][attr] = 0
-        totalsPerStep[step][attr] += usage
-      usagePerStepPerConsumer[step][consumer] = usagePerAttr
+        if not totalPerStepPerAttr[step].has_key(attr):
+          totalPerStepPerAttr[step][attr] = 0
+          usagePerStepPerAttrPerConsumer[step][attr] = { }
+        totalPerStepPerAttr[step][attr] += usage
+        usagePerStepPerAttrPerConsumer[step][attr][consumer] = usage
 
-    highestTotalsPerAttr = { }
+    maxTotalPerAttr = { }
 
-    steps = usagePerStepPerConsumer.keys()
+    steps = totalPerStepPerAttr.keys()
     steps.sort()
     for step in steps:
-      for attr in totalsPerStep[step]:
-        if not highestTotalsPerAttr.has_key(attr) or \
-               totalsPerStep[step][attr] > highestTotalsPerAttr[attr]:
-          highestTotalsPerAttr[attr] = totalsPerStep[step][attr]
+      for attr in totalPerStepPerAttr[step]:
+        if not maxTotalPerAttr.has_key(attr) or \
+               totalPerStepPerAttr[step][attr] > maxTotalPerAttr[attr]:
+          maxTotalPerAttr[attr] = totalPerStepPerAttr[step][attr]
 
-    consumersInAnyStep = {}
+    attrs = maxTotalPerAttr.keys()
+    attrs.sort()
+    for attr in attrs:
 
-    for step in steps:
+      form += '<h2>%s</h2>' % attr
+      legendPerConsumer = { }
 
-      pctsPerConsumer = { }
-      pctsPerConsumer['Others'] = { }
+      for step in steps:
+
+        pctPerConsumer = {'Others':0}
    
-      for consumer in usagePerStepPerConsumer[step]:
-        for attr in usagePerStepPerConsumer[step][consumer]:
-          pct = 100.0 * usagePerStepPerConsumer[step][consumer][attr] / \
-                highestTotalsPerAttr[attr]
+        for consumer in usagePerStepPerAttrPerConsumer[step][attr]:
+          pct = 100.0 * usagePerStepPerAttrPerConsumer[step][attr][consumer] / \
+                maxTotalPerAttr[attr]
           if pct < 2:
-            if not pctsPerConsumer['Others'].has_key(attr):
-              pctsPerConsumer['Others'][attr] = 0
-            pctsPerConsumer['Others'][attr] += pct
-            consumersInAnyStep['Others'] = 1
+            pctPerConsumer['Others'] += pct
+            legendPerConsumer['Others'] = colorsPerConsumer['Others']
           else:
-            if not pctsPerConsumer.has_key(consumer):
-              pctsPerConsumer[consumer] = { }
-            pctsPerConsumer[consumer][attr] = pct
-            consumersInAnyStep[consumer] = 1
+            pctPerConsumer[consumer] = pct
+            legendPerConsumer[consumer] = colorsPerConsumer[consumer]
 
-      form += '<table border="1" width="100%"><tr align="center">\n'
-      form += '<th width="5%%">%s</th>' % step
-      consumers = pctsPerConsumer.keys()
-      consumers.sort()
-      for consumer in consumers:
-        if pctsPerConsumer[consumer].has_key('totalBytes'):
-          pct = int(pctsPerConsumer[consumer]['totalBytes'] + 0.5)
+        form += '<table border="1" width="100%"><tr align="center">\n'
+        form += '<th width="5%%">%s</th>' % step
+
+        consumers = pctPerConsumer.keys()
+        consumers.sort()
+        for consumer in consumers:
+          pct = int(pctPerConsumer[consumer] + 0.5)
+          width = int(pct * 0.9 + 0.5)
           color = colorsPerConsumer[consumer]
           if pct >= 2:
             form += '<td width="%d%%" bgcolor="%02X%02X%02X">%d%%</td>\n' % \
-                    (pct, color[0], color[1], color[2], pct)
+                    (width, color[0], color[1], color[2], pct)
           else:
             form += '<td width="1%%" bgcolor="%02X%02X%02X">&nbsp;</td>\n' % \
                     (color[0], color[1], color[2])
-      form += '<td align="left">%s</td>' % totalsPerStep[step]['totalBytes']
-      form += '</tr></table>\n'
+        form += '<td align="left">%s</td>' % totalPerStepPerAttr[step][attr]
+        form += '</tr></table>\n'
 
-    legend = '<br/><table border="1">\n'
-    consumers = consumersInAnyStep.keys()
-    consumers.sort()
-    for consumer in consumers:
-      color = colorsPerConsumer[consumer]
-      legend += \
-        '<tr><td bgcolor="%02X%02X%02X">&nbsp;</td><td>%s</td></tr>\n' % \
-        (color[0], color[1], color[2], consumer)
-    legend += '</table><br/>\n'
-    form += legend
+      legend = '<br/><table border="1">\n'
+      consumers = legendPerConsumer.keys()
+      consumers.sort()
+      for consumer in consumers:
+        color = legendPerConsumer[consumer]
+        legend += \
+          '<tr><td bgcolor="%02X%02X%02X">&nbsp;</td><td>%s</td></tr>\n' % \
+          (color[0], color[1], color[2], consumer)
+      legend += '</table><br/>\n'
+      form += legend
 
 print head
 print form
-print debug
 print tail
