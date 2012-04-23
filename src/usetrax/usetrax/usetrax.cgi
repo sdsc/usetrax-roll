@@ -164,7 +164,8 @@ if params.has_key('server'):
     maxTotalPerAttr = { }
 
     steps = totalPerStepPerAttr.keys()
-    steps.sort()
+    steps.sort(key=lambda s: s.rjust(10))
+
     for step in steps:
       for attr in totalPerStepPerAttr[step]:
         if not maxTotalPerAttr.has_key(attr) or \

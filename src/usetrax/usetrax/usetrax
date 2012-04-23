@@ -199,9 +199,10 @@ class usetrax:
               usage_this_step[user][totalattr] = 0
             usage_this_step[user][totalattr] += int(float(value))
 
-      for user in sorted(usage_this_step.keys()):
-        display = "%s %s " % (self.strduration(begin_step - self.start), user)
-        for attr in sorted(usage_this_step[user].keys()):
+      offset = self.strduration(begin_step - self.start)
+      for user in usage_this_step.keys():
+        display = "%s %s " % (offset, user)
+        for attr in usage_this_step[user].keys():
           display += ' %s %s' % (attr, usage_this_step[user][attr])
         print display
         sys.stdout.flush()
@@ -275,18 +276,14 @@ class usetrax:
     """
     Converts a number of seconds into a duration string.
     """
-    result = ''
-    if d >= 24 * 60 * 60:
-      result += '%02d:' % int(d / (24 * 60 * 60))
-      d %= 24 * 60 * 60
-    if d >= 60 * 60:
-      result += '%02d:' % int(d / (60 * 60))
-      d %= 60 * 60
-    if d >= 60:
-      result += '%02d:' % int(d / 60)
-      d %= 60
+    result = '%02d:' % int(d / (24 * 60 * 60))
+    d %= 24 * 60 * 60
+    result += '%02d:' % int(d / (60 * 60))
+    d %= 60 * 60
+    result += '%02d:' % int(d / 60)
+    d %= 60
     result += '%02d' % d
-    result = re.sub('^0', '', result)
+    result = re.sub('^(00:)*0?', '', result)
     return result
 
 usetrax()
