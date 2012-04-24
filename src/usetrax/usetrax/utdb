@@ -344,7 +344,6 @@ class utdb:
     and returns the result.
     """
     result = None
-    self.log(sql)
     self.lock.acquire()
     db = MySQLdb.connect(
       host = 'localhost',
