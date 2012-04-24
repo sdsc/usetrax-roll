@@ -119,6 +119,12 @@ class utjm:
     """
     A convenience method for writing a message to the log file.
     """
+    try:
+      stat = os.stat(self.logpath)
+      if stat.st_size >= 1000000:
+        os.rename(self.logpath, self.logpath + '.1')
+    except:
+      pass
     logfile = open(self.logpath, 'a+')
     logfile.write(message + "\n")
     logfile.close()

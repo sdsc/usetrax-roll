@@ -367,6 +367,12 @@ class utdb:
     None, records the most recent exception traceback.
     """
     if self.logpath:
+      try:
+        stat = os.stat(self.logpath)
+        if stat.st_size >= 1000000:
+          os.rename(self.logpath, self.logpath + '.1')
+      except:
+        pass
       log = open(self.logpath, 'a+')
       if message:
         log.write(message)

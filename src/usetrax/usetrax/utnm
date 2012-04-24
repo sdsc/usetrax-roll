@@ -242,7 +242,7 @@ class utnm:
           break
 
         # Collect stdout from a tcpdump process that monitors push packets
-        self.log("Starting tcpdump parsing at %s" % start_time);
+        self.log("tcpdump %s" % start_time);
         tcpdump = subprocess.Popen(
           tcpdump_words, stdout=subprocess.PIPE, bufsize=0
         )
@@ -299,6 +299,12 @@ class utnm:
     """
     A convenience method for writing a message to the log file.
     """
+    try:
+      stat = os.stat(self.logpath)
+      if stat.st_size >= 1000000:
+        os.rename(self.logpath, self.logpath + '.1')
+    except:
+      pass
     logfile = open(self.logpath, 'a+')
     logfile.write(message + "\n")
     logfile.close()
