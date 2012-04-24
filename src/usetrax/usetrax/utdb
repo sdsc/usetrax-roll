@@ -292,7 +292,7 @@ class utdb:
     sql = """SELECT server, client, attr, timestamp, value
              FROM attributes
              WHERE %s
-             ORDER BY server, client, attr, timestamp""" % where
+             ORDER BY timestamp""" % where
     return self.execute_sql(sql, True)
 
   def get_resources(self):
