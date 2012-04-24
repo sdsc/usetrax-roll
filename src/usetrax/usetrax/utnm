@@ -4,6 +4,7 @@ from ConfigParser import SafeConfigParser
 import commands
 import daemon
 from optparse import OptionParser
+import os
 from os.path import expanduser
 import re
 import socket
