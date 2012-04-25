@@ -150,21 +150,29 @@ class utjm:
         except Exception, x:
           self.log('%s' % x)
 
-      for line in commands.getoutput('qstat -n1').split("\n"):
+      for line in commands.getoutput('qstat -x').split("</Job>"):
 
-        pieces = re.split('\s+', line)
-
-        if len(pieces) < 10 or pieces[9] != 'R':
+        if line.find('<job_state>R</job_state>') < 0:
           # Not a running job
           continue
-        match_info = re.search('^(\d+)', pieces[0])
+
+        match_info = re.search('<Job_Id>(\d+)', line)
         if not match_info:
           self.log("Bad qstat line format '%s'" % line)
           continue
-
         job = "%s-%s" % (match_info.group(1), self.resource)
-        hosts = pieces[-1]
-        user = pieces[1]
+
+        hosts = ''
+        match_info = re.search('<exec_host>(.*)</exec_host>', line)
+        if match_info:
+          hosts = match_info.group(1)
+        user = ''
+        match_info = re.search('<Job_Owner>(.*)</Job_Owner>', line)
+        if match_info:
+          user = match_info.group(1).split('@')[0]
+        else:
+          self.log('job owner pattern not found in "%s"' % line)
+          continue
 
         for host in re.split('\+', hosts):
           host = host.split('/', 1)[0]
