@@ -139,12 +139,12 @@ class usetrax:
     ip_hosts = { }
     ip_sum_by = { }
     # GET inefficient, so use HISTORY even for host attr
-    # HISTORY reply format "OK [server,ip,attr,timestamp,value]..."
+    # HISTORY reply format "OK [resource,ip,attr,timestamp,value]..."
     self.send("HISTORY * * %s host" % self.end)
     reply = self.recv()
     if reply.startswith('OK ['):
       for item in reply[4:len(reply) - 1].split(']['):
-        (server,ip,attr,timestamp,value) = item.split(',')
+        (resource,ip,attr,timestamp,value) = item.split(',')
         ip_hosts[ip] = value
         host_ips[value] = ip
     if self.sum_by:
@@ -152,7 +152,7 @@ class usetrax:
       reply = self.recv()
       if reply.startswith('OK ['):
         for item in reply[4:len(reply) - 1].split(']['):
-          (server,ip,attr,timestamp,value) = item.split(',')
+          (resource,ip,attr,timestamp,value) = item.split(',')
           timestamp = int(timestamp)
           if host_ips.has_key(ip):
             # Sum-by value mapped to hostname; switch to IP
@@ -170,9 +170,9 @@ class usetrax:
       self.send("HISTORY %s * %s-%s *" % (self.resource, begin_step, end_step))
       reply = self.recv()
       if reply.startswith('OK ['):
-        # foreach server/ip/attr/timestamp/value tuple from this time step ...
+        # foreach resource/ip/attr/timestamp/value tuple from this time step ...
         for value in reply[4:len(reply) - 1].split(']['):
-          (server, ip, attr, timestamp, value) = value.split(',')
+          (resource, ip, attr, timestamp, value) = value.split(',')
           timestamp = int(timestamp)
           # Determine "user".  If we're summing job/user and we have a summary
           # attribute for this IP, use that; otherwise, if we have a host name

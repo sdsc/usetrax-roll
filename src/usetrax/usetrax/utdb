@@ -44,9 +44,9 @@ class ClientHandler(Thread):
         if command == 'ECHO':
           self.send('OK ' + remainder)
         elif command == 'GET':
-          (server, client, timestamp, attr) = re.split("\s+", remainder, 3)
+          (resource, client, timestamp, attr) = re.split("\s+", remainder, 3)
           reply = 'OK '
-          for value in self.parent.get_attr(server, client, timestamp, attr):
+          for value in self.parent.get_attr(resource, client, timestamp, attr):
             reply += "[%s,%s,%s,%s,%s]" % value
           self.send(reply)
         elif command == 'GETRES':
@@ -57,21 +57,21 @@ class ClientHandler(Thread):
             sep = ','
           self.send(reply)
         elif command == 'HISTORY':
-          (server, client, range, attr) = re.split("\s+", remainder, 3)
+          (resource, client, range, attr) = re.split("\s+", remainder, 3)
           reply = 'OK '
-          for value in self.parent.get_hist(server, client, range, attr):
+          for value in self.parent.get_hist(resource, client, range, attr):
             reply += "[%s,%s,%s,%s,%s]" % value
           self.send(reply)
         elif command == 'SET':
-          (server,client,timestamp,attr,value) = re.split("\s+", remainder, 4)
+          (resource,client,timestamp,attr,value) = re.split("\s+", remainder, 4)
           if value == 'None':
             value = None
-          self.parent.set_attr(server, client, timestamp, attr, value)
+          self.parent.set_attr(resource, client, timestamp, attr, value)
           self.send('OK ');
         elif command == 'SUM':
-          (server, client, range, attr) = re.split("\s+", remainder, 3)
+          (resource, client, range, attr) = re.split("\s+", remainder, 3)
           reply = 'OK '
-          for value in self.parent.get_sum(server, client, range, attr):
+          for value in self.parent.get_sum(resource, client, range, attr):
             reply += "[%s,%s,%s,%s]" % value
           self.send(reply)
         else:
@@ -256,40 +256,40 @@ class utdb:
         break
     self.server.close()
 
-  def get_attr(self, server, client, timestamp, attr):
+  def get_attr(self, resource, client, timestamp, attr):
     """
-    Returns a list of server/client/attribute/timestamp/value tuples for
-    a specified specified server/client/attribute stored most recently
+    Returns a list of resource/client/attribute/timestamp/value tuples for
+    a specified specified resource/client/attribute stored most recently
     before a specified timestamp.
     """
     self.log(
-      "get_attr('%s', '%s', '%s', '%s')" % (server, client, timestamp, attr)
+      "get_attr('%s', '%s', '%s', '%s')" % (resource, client, timestamp, attr)
     )
     # Getting the value w/the largest timestamp is prohibitively expensive
     # in SQL (requires a complex join), so just get the whole history, then
-    # return the latest value for each server/client/attribute.
+    # return the latest value for each resource/client/attribute.
     result = { }
-    for value in self.get_hist(server, client, timestamp, attr):
+    for value in self.get_hist(resource, client, timestamp, attr):
       results["%s-%s-%s" % (value[0], value[1], value[2])] = value
     return result.values()
 
-  def get_hist(self, server, client, range, attr):
+  def get_hist(self, resource, client, range, attr):
     """
-    Returns a list of server/client/attribute/timestamp/value tuples for a
-    specified server/client/attribute stored in the database over a
+    Returns a list of resource/client/attribute/timestamp/value tuples for a
+    specified resource/client/attribute stored in the database over a
     specified timestamp range.
     """
     self.log(
-      "get_hist('%s', '%s', '%s', '%s')" % (server, client, range, attr)
+      "get_hist('%s', '%s', '%s', '%s')" % (resource, client, range, attr)
     )
     where = "timestamp >= %d AND timestamp <= %d" % self.parse_range(range)
     if attr != '*':
       where += " AND attr = '%s'" % attr
     if client != '*':
       where += " AND client = '%s'" % client
-    if server != '*':
-      where += " AND server = '%s'" % server
-    sql = """SELECT server, client, attr, timestamp, value
+    if resource != '*':
+      where += " AND resource = '%s'" % resource
+    sql = """SELECT resource, client, attr, timestamp, value
              FROM attributes
              WHERE %s
              ORDER BY timestamp""" % where
@@ -297,45 +297,45 @@ class utdb:
 
   def get_resources(self):
     """
-    Returns a list of server tuples stored in the database.
+    Returns a list of resource values stored in the database.
     """
     self.log("get_resources()")
-    sql = "SELECT DISTINCT server FROM attributes ORDER BY server"
+    sql = "SELECT DISTINCT resource FROM attributes ORDER BY resource"
     return self.execute_sql(sql, True)
 
-  def get_sum(self, server, client, range, attr):
+  def get_sum(self, resource, client, range, attr):
     """
-    Returns a list of server/client/attribute/sum tuples for a specified
-    server/client/attribute stored in the database over a specified
+    Returns a list of resource/client/attribute/sum tuples for a specified
+    resource/client/attribute stored in the database over a specified
     timestamp range.
     """
     self.log(
-      "get_sum('%s', '%s', '%s', '%s')" % (server, client, range, attr)
+      "get_sum('%s', '%s', '%s', '%s')" % (resource, client, range, attr)
     )
     where = "timestamp >= %d AND timestamp <= %d" % self.parse_range(range)
     if attr != '*':
       where += " AND attr = '%s'" % attr
     if client != '*':
       where += " AND client = '%s'" % client
-    if server != '*':
-      where += " AND server = '%s'" % server
-    sql = """SELECT server, client, attr, SUM(value)
+    if resource != '*':
+      where += " AND resource = '%s'" % resource
+    sql = """SELECT resource, client, attr, SUM(value)
              FROM attributes
              WHERE %s
-             GROUP BY server, client, attr
-             ORDER BY server, client, attr""" % where
+             GROUP BY resource, client, attr
+             ORDER BY resource, client, attr""" % where
     return self.execute_sql(sql, True)
 
-  def set_attr(self, server, client, timestamp, attr, value):
+  def set_attr(self, resource, client, timestamp, attr, value):
     """
     Records in the database a specified attribute/value pair for a specified
-    server/client/timestamp.
+    resource/client/timestamp.
     """
     self.log("set_attr('%s', '%s', '%s', '%s', '%s')" % \
-                       (server, client, timestamp, attr, value))
-    sql = """INSERT INTO attributes(server, client, timestamp, attr, value)
+                       (resource, client, timestamp, attr, value))
+    sql = """INSERT INTO attributes(resource, client, timestamp, attr, value)
              VALUES ('%s', '%s', %d, '%s', '%s')""" % \
-             (server, client, int(timestamp), attr, value)
+             (resource, client, int(timestamp), attr, value)
     self.execute_sql(sql, False)
 
   def execute_sql(self, sql, do_fetch):
