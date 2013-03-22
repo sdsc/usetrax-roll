@@ -1,0 +1,10 @@
+This roll bundles the usetrax network client reporting package.  To install,
+execute these instructions on a Rocks development machine (e.g., a frontend),
+starting in this directory:
+
+% make
+% rocks add roll *.iso
+% rocks enable roll usetrax
+% cd /export/rocks/install
+% rocks create distro
+% rocks run roll usetrax | bash
