@@ -2,6 +2,7 @@ NAME               = python-daemon
 VERSION            = 1.5.5
 RELEASE            = 1
 PKGROOT            = `python -c 'import sys; print sys.path[-1]'`/daemon
+RPM.EXTRAS         = AutoReq:No
 
 SRC_SUBDIR         = python-daemon
 
